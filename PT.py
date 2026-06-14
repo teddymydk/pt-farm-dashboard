@@ -42,7 +42,7 @@ def on_mqtt_message(client, userdata, msg):
     try:
         raw_data = msg.payload.decode('utf-8')
         if "sync" in msg.topic:
-            pass # ซ่อนจุดไข่ปลาไว้ไม่ให้รก Log บนเซิร์ฟเวอร์
+            pass 
         else:
             print(f"\n[MQTT] Topic: {msg.topic} -> Data: {raw_data}")
             
@@ -90,7 +90,8 @@ def on_mqtt_message(client, userdata, msg):
 
 def mqtt_background_thread():
     try:
-        client = mqtt.Client(callback_api_version=mqtt.CallbackApiVersion.VERSION2)
+        # ✅ แก้ไขพิมพ์ใหญ่/เล็ก ตรงคำว่า CallbackAPIVersion เรียบร้อยแล้ว
+        client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
     except AttributeError:
         client = mqtt.Client()
         
