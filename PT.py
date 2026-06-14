@@ -1,4 +1,4 @@
-import webbrowser
+import os
 import threading
 import time
 import urllib.request
@@ -12,8 +12,7 @@ from flask import Flask, jsonify, request, render_template_string
 try:
     import paho.mqtt.client as mqtt
 except ImportError:
-    print("[-] ยังไม่ได้ติดตั้ง paho-mqtt กรุณาพิมพ์คำสั่ง: pip install paho-mqtt")
-    time.sleep(5)
+    print("[-] ยังไม่ได้ติดตั้ง paho-mqtt")
     sys.exit()
 
 app = Flask(__name__)
@@ -43,9 +42,9 @@ def on_mqtt_message(client, userdata, msg):
     try:
         raw_data = msg.payload.decode('utf-8')
         if "sync" in msg.topic:
-            print(".", end="", flush=True)
+            pass # ซ่อนจุดไข่ปลาไว้ไม่ให้รก Log บนเซิร์ฟเวอร์
         else:
-            print(f"\n\n[MQTT รับข้อมูล] Topic: {msg.topic} -> Data: {raw_data}")
+            print(f"\n[MQTT] Topic: {msg.topic} -> Data: {raw_data}")
             
         payload = json.loads(raw_data)
         if payload.get("secret") == SECRET_KEY:
@@ -67,7 +66,6 @@ def on_mqtt_message(client, userdata, msg):
                 if "sensor" in payload and "status" in payload:
                     s = str(payload["sensor"]).strip()
                     st = str(payload["status"]).strip()
-                    print(f"🚨 [อัปเดตหน้าจอ] โรงเรือน: {house} | อุปกรณ์: {s} | สถานะ: {st}")
                     
                     if s == "Temp": houses_data[house]["temp"] = st
                     elif s == "Hum": houses_data[house]["hum"] = st
@@ -97,37 +95,21 @@ def mqtt_background_thread():
         client = mqtt.Client()
         
     client.on_message = on_mqtt_message
-    print("[*] เปิดเครื่องรับข้อมูล MQTT สำเร็จ! รอเชื่อมต่อ HiveMQ...")
+    print("[*] Cloud System Starting... Connecting to MQTT...")
     while True:
         try:
             client.connect(MQTT_BROKER, MQTT_PORT, 60)
             client.subscribe(MQTT_TOPIC_SYNC)
             client.subscribe(MQTT_TOPIC_ALERT)
-            print("[*] เชื่อมต่อ MQTT สำเร็จ! (จุด . คือสัญญาณซิงก์จากบอร์ด)")
+            print("[*] MQTT Connected! Ready to receive data globally.")
             client.loop_forever()
         except Exception as e:
-            print(f"\n[-] ขาดการเชื่อมต่อ MQTT: {e} (พยายามใหม่ใน 5 วิ)")
+            print(f"[-] MQTT Connection dropped. Reconnecting in 5s...")
             time.sleep(5)
 
 @app.route('/api/sd_logs')
 def get_sd_logs():
-    house = request.args.get('house')
-    if house not in houses_data or not houses_data[house]["ip"]:
-        return jsonify({"status": "error", "message": "ยังไม่ได้รับสัญญาณจากโรงเรือนนี้"})
-    ip = houses_data[house]["ip"]
-    try:
-        req = urllib.request.Request(f"http://{ip}/api/logs", method="GET")
-        with urllib.request.urlopen(req, timeout=8) as response:
-            csv_data = response.read().decode('utf-8')
-        parsed_logs = []
-        reader = csv.reader(io.StringIO(csv_data))
-        next(reader, None) 
-        for row in reader:
-            if len(row) >= 3:
-                parsed_logs.insert(0, {"เวลา": row[0], "อุปกรณ์": row[1], "สถานะ": row[2]})
-        return jsonify({"status": "ok", "logs": parsed_logs})
-    except Exception as e:
-        return jsonify({"status": "error", "message": "เชื่อมต่อบอร์ดไม่สำเร็จ"})
+    return jsonify({"status": "error", "message": "ปุ่มดึงไฟล์ SD Card อนุญาตให้ใช้เฉพาะเวลาเปิดดูจากคอมพิวเตอร์ที่ฟาร์ม (วง LAN เดียวกัน) เท่านั้นครับ"})
 
 @app.route('/api/data')
 def api_data(): 
@@ -156,7 +138,7 @@ HTML_PAGE = """
     <div class="container mt-4">
         <div class="text-center mb-4">
             <h1 style="color: #FFDF00; font-weight: bold; margin-bottom: 0;">🌍 PT GROUP FARM</h1>
-            <h5 class="text-secondary mt-1">Cloud Monitor Dashboard (MQTT)</h5>
+            <h5 class="text-secondary mt-1">Global Monitor Dashboard (Online)</h5>
             <div class="d-flex justify-content-center align-items-center gap-2 mt-2">
                 <div id="loadingSpinner" class="spinner-border text-success spinner-border-sm" role="status" style="display: none;"></div>
                 <span class="badge bg-secondary fs-6" id="liveClock">รอการเชื่อมต่อระบบ...</span>
@@ -192,7 +174,7 @@ HTML_PAGE = """
             <div class="card-header fw-bold d-flex flex-wrap justify-content-between align-items-center gap-2" style="background-color: #1f2937;">
                 <h5 class="mb-0 text-light">🕒 การแจ้งเตือนล่าสุด (เฉพาะ ERROR)</h5>
                 <div class="d-flex gap-2 align-items-center">
-                    <button class="btn btn-sm btn-outline-success fw-bold" onclick="openSDModal()">📂 ดูประวัติจาก SD Card</button>
+                    <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="alert('ฟีเจอร์นี้ต้องเปิดจากคอมพิวเตอร์ที่ฟาร์มเท่านั้นครับ')">📂 ดูประวัติจาก SD Card</button>
                     <select id="filterHouse" class="form-select form-select-sm w-auto bg-dark text-white border-secondary">
                         <option value="ทั้งหมด">ทุกโรงเรือน</option>
                         <option value="H1">H1</option>
@@ -215,50 +197,7 @@ HTML_PAGE = """
         </div>
     </div>
 
-    <div class="modal fade" id="sdLogModal" tabindex="-1">
-        <div class="modal-dialog modal-lg">
-            <div class="modal-content bg-dark text-white border-secondary">
-                <div class="modal-header border-secondary" style="background-color: #1f2937;">
-                    <h5 class="modal-title text-success">📂 ประวัติจาก SD Card (โรงเรือน: <span id="sdLogHouseName"></span>)</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body p-0">
-                    <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
-                        <table class="table table-dark table-hover table-striped mb-0 text-center">
-                            <thead style="position: sticky; top: 0; z-index: 1;">
-                                <tr><th>วัน/เวลา</th><th>อุปกรณ์</th><th>สถานะ</th></tr>
-                            </thead>
-                            <tbody id="sd-log-table-body">
-                                <tr><td colspan='3' class='py-5 text-warning'>กำลังเชื่อมต่อ... ⏳</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <script>
-        function openSDModal() {
-            let house = document.getElementById("filterHouse").value;
-            if (house === "ทั้งหมด") { alert("กรุณาเลือกโรงเรือน (H1-H4) ก่อนครับ"); return; }
-            document.getElementById("sdLogHouseName").innerText = house;
-            document.getElementById("sd-log-table-body").innerHTML = "<tr><td colspan='3' class='py-5 text-warning'>กำลังดาวน์โหลดข้อมูล... ⏳</td></tr>";
-            var sdModal = new bootstrap.Modal(document.getElementById('sdLogModal')); sdModal.show();
-            
-            fetch('/api/sd_logs?house=' + house + '&t=' + Date.now()).then(res => res.json()).then(data => {
-                if (data.status === "ok") {
-                    let html = "";
-                    if(data.logs.length === 0) html = "<tr><td colspan='3' class='py-4 text-muted'>ไม่มีประวัติการแจ้งเตือน</td></tr>";
-                    else data.logs.forEach(log => {
-                        let statusColor = log.สถานะ.includes("ERROR") || log.สถานะ.includes("TRIGGER") ? "text-danger" : "text-success";
-                        html += `<tr><td>${log.เวลา}</td><td>${log.อุปกรณ์}</td><td class="${statusColor} fw-bold">${log.สถานะ}</td></tr>`;
-                    });
-                    document.getElementById("sd-log-table-body").innerHTML = html;
-                } else document.getElementById("sd-log-table-body").innerHTML = `<tr><td colspan='3' class='text-danger py-4'>❌ ล้มเหลว: ${data.message}</td></tr>`;
-            }).catch(err => { document.getElementById("sd-log-table-body").innerHTML = `<tr><td colspan='3' class='text-danger py-4'>❌ ขาดการเชื่อมต่อเครือข่าย</td></tr>`; });
-        }
-
         function updateData() {
             let spinner = document.getElementById("loadingSpinner");
             let clock = document.getElementById("liveClock");
@@ -344,11 +283,10 @@ HTML_PAGE = """
 def index():
     return render_template_string(HTML_PAGE)
 
-def open_browser():
-    time.sleep(2)  
-    webbrowser.open("http://localhost:5000")
-
 if __name__ == "__main__":
+    # เปิด Thread ตัวรับข้อมูล MQTT
     threading.Thread(target=mqtt_background_thread, daemon=True).start()
-    threading.Thread(target=open_browser, daemon=True).start()
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    
+    # ดึง Port อัตโนมัติที่ Cloud กำหนดมาให้
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
