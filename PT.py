@@ -90,7 +90,6 @@ def on_mqtt_message(client, userdata, msg):
 
 def mqtt_background_thread():
     try:
-        # ✅ แก้ไขพิมพ์ใหญ่/เล็ก ตรงคำว่า CallbackAPIVersion เรียบร้อยแล้ว
         client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
     except AttributeError:
         client = mqtt.Client()
@@ -107,10 +106,6 @@ def mqtt_background_thread():
         except Exception as e:
             print(f"[-] MQTT Connection dropped. Reconnecting in 5s...")
             time.sleep(5)
-
-@app.route('/api/sd_logs')
-def get_sd_logs():
-    return jsonify({"status": "error", "message": "ปุ่มดึงไฟล์ SD Card อนุญาตให้ใช้เฉพาะเวลาเปิดดูจากคอมพิวเตอร์ที่ฟาร์ม (วง LAN เดียวกัน) เท่านั้นครับ"})
 
 @app.route('/api/data')
 def api_data(): 
@@ -175,7 +170,19 @@ HTML_PAGE = """
             <div class="card-header fw-bold d-flex flex-wrap justify-content-between align-items-center gap-2" style="background-color: #1f2937;">
                 <h5 class="mb-0 text-light">🕒 การแจ้งเตือนล่าสุด (เฉพาะ ERROR)</h5>
                 <div class="d-flex gap-2 align-items-center">
-                    <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="alert('ฟีเจอร์นี้ต้องเปิดจากคอมพิวเตอร์ที่ฟาร์มเท่านั้นครับ')">📂 ดูประวัติจาก SD Card</button>
+                    
+                    <div class="dropdown d-inline-block">
+                        <button class="btn btn-sm btn-outline-secondary fw-bold dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                            📂 โหลดประวัติ SD Card (ผ่าน LAN)
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-dark">
+                            <li><a class="dropdown-item" href="#" onclick="downloadCSV('H1')">โหลดของโรงเรือน H1</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="downloadCSV('H2')">โหลดของโรงเรือน H2</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="downloadCSV('H3')">โหลดของโรงเรือน H3</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="downloadCSV('H4')">โหลดของโรงเรือน H4</a></li>
+                        </ul>
+                    </div>
+
                     <select id="filterHouse" class="form-select form-select-sm w-auto bg-dark text-white border-secondary">
                         <option value="ทั้งหมด">ทุกโรงเรือน</option>
                         <option value="H1">H1</option>
@@ -199,12 +206,17 @@ HTML_PAGE = """
     </div>
 
     <script>
+        // ตัวแปรสำหรับเก็บข้อมูล IP ล่าสุดของแต่ละตู้
+        let latestHousesData = {};
+
         function updateData() {
             let spinner = document.getElementById("loadingSpinner");
             let clock = document.getElementById("liveClock");
             spinner.style.display = "inline-block";
             
             fetch('/api/data?t=' + Date.now()).then(res => res.json()).then(data => {
+                latestHousesData = data.houses; // อัปเดตข้อมูลตู้เพื่อนำ IP ไปใช้งานตอนโหลดไฟล์
+                
                 setTimeout(() => {
                     spinner.style.display = "none";
                     clock.className = "badge bg-success fs-6";
@@ -272,6 +284,26 @@ HTML_PAGE = """
             });
         }
         
+        // ฟังก์ชันสำหรับเปิดแท็บใหม่ วิ่งตรงไปหาตู้ ESP32 ตาม IP ที่ได้จาก MQTT
+        function downloadCSV(house) {
+            let houseData = latestHousesData[house];
+            
+            if (!houseData || !houseData.ip || houseData.ip === "") {
+                alert("⚠️ ยังไม่ได้รับ IP ของโรงเรือน " + house + " กรุณารอให้ตู้ส่งข้อมูลเข้าระบบสักครู่ครับ");
+                return;
+            }
+            
+            if (houseData.ip === "0.0.0.0") {
+                alert("⚠️ ตู้คอนโทรล " + house + " ยังไม่ได้เชื่อมต่อ Wi-Fi ครับ");
+                return;
+            }
+
+            let confirmMsg = "กำลังเชื่อมต่อไปที่ตู้ " + house + " (IP: " + houseData.ip + ")\\n\\nคุณเชื่อมต่อ Wi-Fi วงเดียวกันกับที่ฟาร์มนาคำอยู่ใช่ไหม?";
+            if (confirm(confirmMsg)) {
+                window.open("http://" + houseData.ip + "/api/logs", "_blank");
+            }
+        }
+        
         document.getElementById("filterHouse").addEventListener("change", updateData);
         setInterval(updateData, 1000); 
         updateData();
@@ -285,9 +317,7 @@ def index():
     return render_template_string(HTML_PAGE)
 
 if __name__ == "__main__":
-    # เปิด Thread ตัวรับข้อมูล MQTT
     threading.Thread(target=mqtt_background_thread, daemon=True).start()
     
-    # ดึง Port อัตโนมัติที่ Cloud กำหนดมาให้
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
