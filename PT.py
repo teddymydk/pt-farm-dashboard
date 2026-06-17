@@ -322,9 +322,10 @@ HTML_PAGE = """
                     document.getElementById("sdModalStatus").className = "ms-auto text-success small fw-bold";
                 } 
                 else if (data.status === "fallback") {
+                    console.log("OPEN:", data.ip);
                     document.getElementById("sdModalStatus").innerText = "กำลังเปิดไฟล์จาก ESP32...";
                     document.getElementById("sdModalStatus").className = "ms-auto text-success small fw-bold";
-                    window.open("http://" + data.ip + "/api/logs","_blank");
+                    location.href = "http://" + data.ip + "/api/logs";
                      
                 } 
                 else {
