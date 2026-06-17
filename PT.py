@@ -322,11 +322,21 @@ HTML_PAGE = """
                     document.getElementById("sdModalStatus").className = "ms-auto text-success small fw-bold";
                 } 
                 else if (data.status === "fallback") {
-                    console.log("OPEN:", data.ip);
-                    document.getElementById("sdModalStatus").innerText = "กำลังเปิดไฟล์จาก ESP32...";
+                    
+                    document.getElementById("sdModalStatus").innerText = "พบ ESP32 ในวง LAN";
                     document.getElementById("sdModalStatus").className = "ms-auto text-success small fw-bold";
-                    location.href = "http://" + data.ip + "/api/logs";
-                     
+                    document.getElementById("sd-log-table-body").innerHTML =
+                        `
+                        <tr>
+                            <td colspan="3" class="py-4">
+                                <a href="http://${data.ip}/api/logs"
+                                   target="_blank"
+                                   class="btn btn-success btn-lg">
+                                   📂 ดาวน์โหลดไฟล์จาก ESP32
+                                </a>
+                            </td>
+                        </tr>
+                        `;
                 } 
                 else {
                     document.getElementById("sdModalStatus").innerText = "❌ ขัดข้อง";
