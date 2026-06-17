@@ -95,7 +95,7 @@ def on_mqtt_message(client, userdata, msg):
                                 sensor["status"] = st
                                 break
                                     
-                    # 🟢 [แก้ไขใหม่] อนุญาตให้เก็บทั้ง ERROR และ NORMAL ลงตารางแจ้งเตือน
+                    # เก็บ Log ทุกสถานะ (ทั้ง ERROR และ NORMAL)
                     if s not in ["Temp", "Hum"]:
                         time_str = datetime.now().strftime("%H:%M:%S")
                         logs_data.insert(0, {"เวลา": time_str, "โรงเรือน": house, "อุปกรณ์": s, "สถานะ": st})
@@ -122,15 +122,32 @@ def mqtt_background_thread():
             print(f"[-] MQTT Network Error: {e}. Retrying in 5s...")
             time.sleep(5)
 
-# 🟢 [แก้ไขใหม่] สร้าง API สำหรับขอ IP ของบอร์ดเท่านั้น 
-# เพื่อให้เบราว์เซอร์วิ่งไปโหลดไฟล์เอง โดยไม่ต้องผ่าน Cloud
-@app.route('/api/get_board_ip')
-def get_board_ip():
+# 🟢 [นำโค้ดดึง SD Card จากเวอร์ชันเก่ากลับมาใส่]
+@app.route('/api/sd_logs')
+def get_sd_logs():
     house = request.args.get('house')
     if house not in houses_data or not houses_data[house]["ip"]:
-        return jsonify({"status": "error", "message": "บอร์ดเพิ่งเปิด หรือยังไม่ได้รับ IP ผ่านเครือข่าย (รอให้ข้อมูลอัปเดตสักครู่)"})
+        return jsonify({"status": "error", "message": "ยังไม่ได้รับสัญญาณจากโรงเรือนนี้ (บอร์ดอาจจะปิดอยู่ หรือยังไม่ได้ IP)"})
     
-    return jsonify({"status": "ok", "ip": houses_data[house]["ip"]})
+    ip = houses_data[house]["ip"]
+    try:
+        req = urllib.request.Request(f"http://{ip}/api/logs", method="GET")
+        with urllib.request.urlopen(req, timeout=8) as response:
+            csv_data = response.read().decode('utf-8')
+            
+        parsed_logs = []
+        reader = csv.reader(io.StringIO(csv_data))
+        next(reader, None) # ข้ามบรรทัด Header (Date/Time,Channel,Status)
+        for row in reader:
+            if len(row) >= 3:
+                parsed_logs.insert(0, {
+                    "เวลา": row[0],
+                    "อุปกรณ์": row[1],
+                    "สถานะ": row[2]
+                })
+        return jsonify({"status": "ok", "logs": parsed_logs})
+    except Exception as e:
+        return jsonify({"status": "error", "message": "เชื่อมต่อบอร์ดไม่สำเร็จ หรือไม่พบไฟล์ประวัติ"})
 
 @app.route('/api/data')
 def api_data(): 
@@ -193,18 +210,17 @@ HTML_PAGE = """
 
         <div class="card text-bg-dark border-secondary mt-2 mb-5">
             <div class="card-header fw-bold d-flex flex-wrap justify-content-between align-items-center gap-2" style="background-color: #1f2937;">
-                <h5 class="mb-0 text-light">🕒 การแจ้งเตือนล่าสุด (ทั้งระบบ)</h5>
+                <h5 class="mb-0 text-light">🕒 การแจ้งเตือนล่าสุด</h5>
                 <div class="d-flex gap-2 align-items-center">
-                    <button class="btn btn-sm btn-outline-success fw-bold" onclick="openCsvModal()">📂 เปิดประวัติจากไฟล์ SD Card</button>
+                    <button class="btn btn-sm btn-outline-success fw-bold" onclick="openSDModal()">
+                        📂 ดูประวัติทั้งหมดจาก SD Card
+                    </button>
                     <select id="filterHouse" class="form-select form-select-sm w-auto bg-dark text-white border-secondary">
                         <option value="ทั้งหมด">ทุกโรงเรือน</option>
                         <option value="H1">H1</option>
                         <option value="H2">H2</option>
                         <option value="H3">H3</option>
                         <option value="H4">H4</option>
-                    </select>
-                    <select id="filterDevice" class="form-select form-select-sm w-auto bg-dark text-white border-secondary">
-                        <option value="ทั้งหมด">ทุกอุปกรณ์</option>
                     </select>
                 </div>
             </div>
@@ -221,34 +237,25 @@ HTML_PAGE = """
         </div>
     </div>
 
-    <div class="modal fade" id="csvModal" tabindex="-1">
-        <div class="modal-dialog modal-xl">
+    <div class="modal fade" id="sdLogModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
             <div class="modal-content bg-dark text-white border-secondary">
                 <div class="modal-header border-secondary" style="background-color: #1f2937;">
-                    <h5 class="modal-title text-success">📂 เปิดดูประวัติจากไฟล์ SD Card (CSV Viewer)</h5>
+                    <h5 class="modal-title text-success">📂 ประวัติจาก SD Card (โรงเรือน: <span id="sdLogHouseName"></span>)</h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
-                <div class="modal-body p-3">
-                    <div class="d-flex gap-2 mb-3 align-items-center flex-wrap" style="background: #1a1a1a; padding: 10px; border-radius: 8px; border: 1px solid #444;">
-                        <button class="btn btn-success fw-bold btn-sm" onclick="loadFromBoard()">⬇️ ดาวน์โหลดไฟล์จากบอร์ด (วง LAN เดียวกัน)</button>
-                        <div class="vr mx-1"></div>
-                        <span class="text-muted small">หรือเลือกไฟล์ที่โหลดมา:</span>
-                        <input type="file" id="csvFileInput" accept=".csv" class="form-control form-control-sm w-auto bg-dark text-white border-secondary">
-                        <div class="vr mx-1 bg-secondary"></div>
-                        <label class="text-info fw-bold small">กรองอุปกรณ์:</label>
-                        <select id="modalDeviceFilter" class="form-select form-select-sm w-auto bg-dark text-white border-secondary">
-                            <option value="ทั้งหมด">ทุกอุปกรณ์</option>
-                        </select>
-                        <span id="csvStatus" class="text-warning small fw-bold ms-auto"></span>
-                    </div>
-
+                <div class="modal-body p-0">
                     <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
                         <table class="table table-dark table-hover table-striped mb-0 text-center">
                             <thead style="position: sticky; top: 0; z-index: 1;">
-                                <tr><th>วัน/เวลา</th><th>อุปกรณ์</th><th>สถานะ</th></tr>
+                                <tr>
+                                    <th>วัน/เวลา</th>
+                                    <th>อุปกรณ์</th>
+                                    <th>สถานะ</th>
+                                </tr>
                             </thead>
-                            <tbody id="csv-table-body">
-                                <tr><td colspan='3' class='py-5 text-muted'>กดปุ่ม 'ดาวน์โหลดไฟล์' หรือเลือกไฟล์เพื่อแสดงผล...</td></tr>
+                            <tbody id="sd-log-table-body">
+                                <tr><td colspan='3' class='py-5 text-warning'>กำลังเชื่อมต่อ ESP32 และดาวน์โหลดข้อมูล... ⏳</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -258,114 +265,40 @@ HTML_PAGE = """
     </div>
 
     <script>
-        let globalCsvData = [];
-
-        function openCsvModal() {
-            var myModal = new bootstrap.Modal(document.getElementById('csvModal'));
-            myModal.show();
-        }
-
-        // 🟢 [แก้ไขใหม่] ให้เบราว์เซอร์วิ่งไปเปิด IP ของบอร์ดเพื่อดาวน์โหลดไฟล์เอง
-        function loadFromBoard() {
+        function openSDModal() {
             let house = document.getElementById("filterHouse").value;
             if (house === "ทั้งหมด") {
-                alert("กรุณาเลือกชื่อโรงเรือน (เช่น H2) ที่ช่องตัวกรองด้านหน้าก่อนครับ เพื่อระบุว่าจะดึงไฟล์ของบอร์ดไหน");
+                alert("กรุณาเลือกโรงเรือน (H1-H4) ในช่องตัวกรองก่อนครับ เพื่อระบุว่าจะดูประวัติของตู้คอนโทรลไหน");
                 return;
             }
+            document.getElementById("sdLogHouseName").innerText = house;
+            document.getElementById("sd-log-table-body").innerHTML = "<tr><td colspan='3' class='py-5 text-warning'>กำลังเชื่อมต่อ ESP32 และดาวน์โหลดข้อมูล... ⏳</td></tr>";
             
-            document.getElementById('csvStatus').className = "text-warning small fw-bold ms-auto blink-text";
-            document.getElementById('csvStatus').innerText = "กำลังค้นหา IP ของบอร์ด...";
-            
-            fetch('/api/get_board_ip?house=' + house)
+            var sdModal = new bootstrap.Modal(document.getElementById('sdLogModal'));
+            sdModal.show();
+
+            fetch('/api/sd_logs?house=' + house)
             .then(res => res.json())
             .then(data => {
-                document.getElementById('csvStatus').classList.remove("blink-text");
                 if (data.status === "ok") {
-                    // สั่งเปิด URL ของบอร์ดในแท็บใหม่ เพื่อดาวน์โหลดไฟล์เข้าคอม
-                    window.open("http://" + data.ip + "/api/logs", "_blank");
-                    
-                    document.getElementById('csvStatus').className = "text-success small fw-bold ms-auto";
-                    document.getElementById('csvStatus').innerText = "✅ ดาวน์โหลดสำเร็จ! ให้นำไฟล์ที่ได้มากดปุ่ม 'Choose File' ทางซ้ายมือเพื่อเปิดดูครับ";
-                } else {
-                    document.getElementById('csvStatus').className = "text-danger small fw-bold ms-auto";
-                    document.getElementById('csvStatus').innerText = "❌ ล้มเหลว: " + data.message;
-                }
-            })
-            .catch(err => {
-                document.getElementById('csvStatus').classList.remove("blink-text");
-                document.getElementById('csvStatus').className = "text-danger small fw-bold ms-auto";
-                document.getElementById('csvStatus').innerText = "❌ ขัดข้องในการเชื่อมต่อระบบหลังบ้าน";
-            });
-        }
-
-        document.getElementById('csvFileInput').addEventListener('change', function(e) {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            document.getElementById('csvStatus').innerText = "กำลังอ่านไฟล์แนบ...";
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                parseAndDisplayCSV(event.target.result);
-                document.getElementById('csvStatus').className = "text-success small fw-bold ms-auto";
-                document.getElementById('csvStatus').innerText = `✅ โหลดไฟล์สำเร็จ (${globalCsvData.length} บรรทัด)`;
-            };
-            reader.readAsText(file);
-        });
-
-        function parseAndDisplayCSV(text) {
-            const lines = text.split('\\n');
-            globalCsvData = [];
-            let uniqueDevices = new Set();
-
-            for (let i = 1; i < lines.length; i++) {
-                const row = lines[i].trim();
-                if (!row) continue;
-                
-                const cols = row.split(',');
-                if (cols.length >= 3) {
-                    const time = cols[0].trim();
-                    const device = cols[1].trim();
-                    const status = cols[2].trim();
-                    globalCsvData.push({ time, device, status });
-                    uniqueDevices.add(device);
-                }
-            }
-
-            let filterHtml = '<option value="ทั้งหมด">ทุกอุปกรณ์</option>';
-            Array.from(uniqueDevices).sort().forEach(dev => {
-                filterHtml += `<option value="${dev}">${dev}</option>`;
-            });
-            document.getElementById('modalDeviceFilter').innerHTML = filterHtml;
-            renderCsvTable();
-        }
-
-        function renderCsvTable() {
-            const filterDev = document.getElementById('modalDeviceFilter').value;
-            let html = '';
-            let count = 0;
-
-            const reversedData = [...globalCsvData].reverse();
-            reversedData.forEach(row => {
-                if (filterDev === "ทั้งหมด" || row.device === filterDev) {
-                    count++;
-                    let stStr = row.status.toUpperCase();
-                    let statusColor = "text-success";
-                    if (stStr.includes("ERROR") || stStr.includes("TRIGGER") || stStr.includes("HIGH") || stStr.includes("LOW")) {
-                        statusColor = "text-danger";
-                    } else if (row.device === "SYSTEM") {
-                        statusColor = "text-warning";
+                    let html = "";
+                    if(data.logs.length === 0) {
+                        html = "<tr><td colspan='3' class='py-4 text-muted'>ว่างเปล่า (ยังไม่มีประวัติใน SD Card)</td></tr>";
+                    } else {
+                        data.logs.forEach(log => {
+                            let statusColor = log.สถานะ.includes("ERROR") || log.สถานะ.includes("TRIGGER") || log.สถานะ.includes("HIGH") || log.สถานะ.includes("LOW") ? "text-danger" : "text-success";
+                            if(log.อุปกรณ์ === "SYSTEM") statusColor = "text-warning";
+                            html += `<tr><td>${log.เวลา}</td><td>${log.อุปกรณ์}</td><td class="${statusColor} fw-bold">${log.สถานะ}</td></tr>`;
+                        });
                     }
-                    html += `<tr><td>${row.time}</td><td>${row.device}</td><td class="${statusColor} fw-bold">${row.status}</td></tr>`;
+                    document.getElementById("sd-log-table-body").innerHTML = html;
+                } else {
+                    document.getElementById("sd-log-table-body").innerHTML = `<tr><td colspan='3' class='text-danger py-4'>❌ ดึงข้อมูลล้มเหลว: ${data.message}</td></tr>`;
                 }
+            }).catch(err => {
+                document.getElementById("sd-log-table-body").innerHTML = `<tr><td colspan='3' class='text-danger py-4'>❌ ขาดการเชื่อมต่อกับหลังบ้าน (Backend)</td></tr>`;
             });
-
-            if (count === 0) {
-                html = "<tr><td colspan='3' class='py-5 text-warning'>ไม่พบข้อมูลที่ตรงกับเงื่อนไข</td></tr>";
-            }
-            document.getElementById('csv-table-body').innerHTML = html;
         }
-
-        document.getElementById('modalDeviceFilter').addEventListener('change', renderCsvTable);
 
         function updateData() {
             let spinner = document.getElementById("loadingSpinner");
@@ -378,8 +311,6 @@ HTML_PAGE = """
                     clock.className = "badge bg-success fs-6";
                     clock.innerText = "🟢 ออนไลน์: " + new Date().toLocaleTimeString();
                 }, 200);
-
-                let uniqueNames = new Set(); 
 
                 for (const [house, hData] of Object.entries(data.houses)) {
                     let elTemp = document.getElementById(house + "_Temp");
@@ -396,8 +327,6 @@ HTML_PAGE = """
                     if(elHum && elHum.innerText !== hData.hum) elHum.innerText = hData.hum;
 
                     hData.sensors.forEach((sensor, idx) => {
-                        uniqueNames.add(sensor.name); 
-                        
                         let nameEl = document.getElementById(house + "_name_" + idx);
                         let statusEl = document.getElementById(house + "_status_" + idx);
                         
@@ -418,15 +347,6 @@ HTML_PAGE = """
                     });
                 }
                 
-                let filterDevice = document.getElementById("filterDevice");
-                let currentSelection = filterDevice.value;
-                let optionsHtml = '<option value="ทั้งหมด">ทุกอุปกรณ์</option>';
-                Array.from(uniqueNames).sort().forEach(name => {
-                    let selected = (name === currentSelection) ? "selected" : "";
-                    optionsHtml += `<option value="${name}" ${selected}>${name}</option>`;
-                });
-                if (filterDevice.innerHTML !== optionsHtml) filterDevice.innerHTML = optionsHtml;
-
                 let tbody = document.getElementById("log-table-body");
                 let filterHouse = document.getElementById("filterHouse").value;
                 let rowsHtml = ""; let count = 0;
@@ -436,16 +356,14 @@ HTML_PAGE = """
                 } else {
                     data.logs.forEach(log => {
                         let matchHouse = (filterHouse === "ทั้งหมด" || log.โรงเรือน === filterHouse);
-                        let matchDevice = (currentSelection === "ทั้งหมด" || log.อุปกรณ์ === currentSelection);
-                        
-                        if (matchHouse && matchDevice) {
+                        if (matchHouse) {
                             count++;
                             let stStr = log.สถานะ.toUpperCase();
                             let statusColor = (stStr.includes("ERROR") || stStr.includes("TRIGGER")) ? "text-danger" : "text-success";
                             rowsHtml += `<tr><td>${log.เวลา}</td><td>${log.โรงเรือน}</td><td>${log.อุปกรณ์}</td><td class="${statusColor} fw-bold">${log.สถานะ}</td></tr>`;
                         }
                     });
-                    if (count === 0) rowsHtml = "<tr><td colspan='4' class='text-muted py-4'>🔍 ไม่พบข้อมูลที่ตรงกับตัวกรอง</td></tr>";
+                    if (count === 0) rowsHtml = "<tr><td colspan='4' class='text-muted py-4'>🔍 ไม่พบข้อมูล</td></tr>";
                 }
                 tbody.innerHTML = rowsHtml;
             }).catch(err => {
@@ -456,7 +374,6 @@ HTML_PAGE = """
         }
         
         document.getElementById("filterHouse").addEventListener("change", updateData);
-        document.getElementById("filterDevice").addEventListener("change", updateData);
         setInterval(updateData, 1000); 
         updateData();
     </script>
