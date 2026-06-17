@@ -56,9 +56,6 @@ def on_mqtt_message(client, userdata, msg):
         
         if "sync" not in msg.topic:
             print(f"\n[MQTT ALERT] Topic: {msg.topic} -> Data: {raw_data}")
-        else:
-            house_str = msg.topic.split('/')[1]
-            print(f"[MQTT SYNC] ได้รับข้อมูลอัปเดตจากโรงเรือน: {house_str}")
             
         payload = json.loads(raw_data)
         if payload.get("secret") == SECRET_KEY:
@@ -120,6 +117,39 @@ def mqtt_background_thread():
         except Exception as e:
             print(f"[-] MQTT Network Error: {e}. Retrying in 5s...")
             time.sleep(5)
+
+# 🟢 ไอเดียโค้ดไฮบริด: ลองใช้ "โค้ดพิเศษดึงในวง LAN" ก่อน ถ้าไม่ได้ค่อยสลับโหมด
+@app.route('/api/sd_logs')
+def get_sd_logs():
+    house = request.args.get('house')
+    if house not in houses_data or not houses_data[house]["ip"]:
+        return jsonify({"status": "error", "message": "ยังไม่ได้รับ IP จากตู้คอนโทรล (รอสักครู่)"})
+    
+    ip = houses_data[house]["ip"]
+    if ip == "0.0.0.0" or ip == "":
+        return jsonify({"status": "error", "message": "ตู้คอนโทรลยังไม่ได้ต่อ Wi-Fi"})
+
+    try:
+        # 1. พยายามใช้ "โค้ดพิเศษ" โหลดไฟล์ตรงๆ ภายในเวลา 3 วินาที (ทำงาน 100% ถ้าอยู่วง LAN เดียวกัน)
+        req = urllib.request.Request(f"http://{ip}/api/logs", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as response:
+            csv_data = response.read().decode('utf-8')
+            
+        parsed_logs = []
+        reader = csv.reader(io.StringIO(csv_data))
+        next(reader, None) 
+        for row in reader:
+            if len(row) >= 3:
+                parsed_logs.insert(0, {
+                    "เวลา": row[0].strip(),
+                    "อุปกรณ์": row[1].strip(),
+                    "สถานะ": row[2].strip()
+                })
+        return jsonify({"status": "ok", "logs": parsed_logs})
+    except Exception as e:
+        # 2. ถ้ารันบน Render (Cloud) มันจะเข้า Error ตรงนี้ทันที
+        # เราส่งสถานะ fallback กลับไป เพื่อให้หน้าเว็บเปลี่ยนไปแสดง "ปุ่มคัดลอกลิงก์" แทน
+        return jsonify({"status": "fallback", "ip": ip})
 
 @app.route('/api/data')
 def api_data(): 
@@ -184,7 +214,7 @@ HTML_PAGE = """
             <div class="card-header fw-bold d-flex flex-wrap justify-content-between align-items-center gap-2" style="background-color: #1f2937;">
                 <h5 class="mb-0 text-light">🕒 การแจ้งเตือนล่าสุด (ทั้งระบบ)</h5>
                 <div class="d-flex gap-2 align-items-center">
-                    <button class="btn btn-sm btn-outline-success fw-bold" onclick="openCsvModal()">
+                    <button class="btn btn-sm btn-outline-success fw-bold" onclick="openSDModal()">
                         📂 ดูประวัติทั้งหมดจาก SD Card
                     </button>
                     <select id="filterHouse" class="form-select form-select-sm w-auto bg-dark text-white border-secondary">
@@ -212,28 +242,35 @@ HTML_PAGE = """
         </div>
     </div>
 
-    <div class="modal fade" id="csvModal" tabindex="-1">
+    <div class="modal fade" id="sdLogModal" tabindex="-1">
         <div class="modal-dialog modal-xl">
             <div class="modal-content bg-dark text-white border-secondary">
                 <div class="modal-header border-secondary" style="background-color: #1f2937;">
-                    <h5 class="modal-title text-success">📂 เปิดดูประวัติจากไฟล์ SD Card (CSV Viewer)</h5>
+                    <h5 class="modal-title text-success">📂 ประวัติจาก SD Card (โรงเรือน: <span id="sdLogHouseName"></span>)</h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body p-3">
+                    
                     <div class="d-flex gap-2 mb-3 align-items-center flex-wrap" style="background: #1a1a1a; padding: 10px; border-radius: 8px; border: 1px solid #444;">
-                        
-                        <a id="downloadBtn" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-primary fw-bold btn-sm" onclick="return prepareDownloadLink()">⬇️ 1. โหลดไฟล์จากตู้</a>
-                        
-                        <div class="vr mx-1"></div>
-                        <span class="text-muted small">2. นำเข้าไฟล์ที่โหลดมา:</span>
-                        <input type="file" id="csvFileInput" accept=".csv" class="form-control form-control-sm w-auto bg-dark text-white border-secondary">
-                        
-                        <div class="vr mx-1 bg-secondary"></div>
                         <label class="text-info fw-bold small">กรองอุปกรณ์:</label>
                         <select id="modalDeviceFilter" class="form-select form-select-sm w-auto bg-dark text-white border-secondary">
                             <option value="ทั้งหมด">ทุกอุปกรณ์</option>
                         </select>
-                        <span id="csvStatus" class="text-warning small fw-bold ms-auto"></span>
+                        <span id="sdModalStatus" class="text-warning small fw-bold ms-auto"></span>
+                    </div>
+
+                    <div id="fallbackUi" style="display: none;" class="alert alert-warning p-2 text-start mb-3 border-warning">
+                        <strong>⚠️ พบการเชื่อมต่อผ่าน Cloud (หรืออยู่นอกวง LAN)</strong> Chrome บล็อกการเปิดแท็บอัตโนมัติ<br>
+                        <span class="text-dark fw-bold">วิธีดึงข้อมูล (ทำครั้งเดียวผ่าน 100%):</span>
+                        <div class="input-group input-group-sm my-2 w-75">
+                            <span class="input-group-text bg-warning text-dark fw-bold">1. คัดลอกลิงก์ตู้</span>
+                            <input type="text" id="manualUrl" class="form-control bg-light text-dark fw-bold" readonly>
+                            <button class="btn btn-dark fw-bold" onclick="copyUrl()">คัดลอก</button>
+                        </div>
+                        <div class="mb-1 text-dark">2. เปิดแท็บใหม่ กด <b>Paste & Go (วางและไป)</b> เพื่อโหลดไฟล์ลงเครื่อง</div>
+                        <div class="d-flex align-items-center text-dark">
+                            3. นำเข้าไฟล์ที่ได้มาใส่ตรงนี้ ➡️ <input type="file" id="csvFileInput" accept=".csv" class="form-control form-control-sm w-auto ms-2 border-secondary bg-dark text-white">
+                        </div>
                     </div>
 
                     <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
@@ -241,8 +278,8 @@ HTML_PAGE = """
                             <thead style="position: sticky; top: 0; z-index: 1;">
                                 <tr><th>วัน/เวลา</th><th>อุปกรณ์</th><th>สถานะ</th></tr>
                             </thead>
-                            <tbody id="csv-table-body">
-                                <tr><td colspan='3' class='py-5 text-muted'>กดปุ่ม "โหลดไฟล์จากตู้" แล้วนำไฟล์ที่ได้มากด "Choose File" เพื่อแสดงผล...</td></tr>
+                            <tbody id="sd-log-table-body">
+                                <tr><td colspan='3' class='py-5 text-muted'>กำลังตรวจสอบเครือข่ายวง LAN...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -252,110 +289,139 @@ HTML_PAGE = """
     </div>
 
     <script>
-        let globalCsvData = [];
-        let currentGlobalData = null; 
+        let currentSdLogs = [];
 
-        function openCsvModal() {
-            var myModal = new bootstrap.Modal(document.getElementById('csvModal'));
-            myModal.show();
-        }
-
-        // 🟢 ฟังก์ชันเตรียมลิงก์ก่อนที่เบราว์เซอร์จะเปิด (แก้อาการ Chrome บล็อก)
-        function prepareDownloadLink() {
+        function openSDModal() {
             let house = document.getElementById("filterHouse").value;
             if (house === "ทั้งหมด") {
-                alert("⚠️ กรุณาเลือกชื่อโรงเรือน (H1-H4) ที่ช่องตัวกรองด้านหน้าก่อนครับ");
-                return false; // ห้ามลิงก์ทำงาน
+                alert("⚠️ กรุณาเลือกชื่อโรงเรือน (H1-H4) ที่ช่องตัวกรองหน้าเว็บก่อนครับ");
+                return;
             }
             
-            if (currentGlobalData && currentGlobalData.houses && currentGlobalData.houses[house]) {
-                let ip = currentGlobalData.houses[house].ip;
-                if (ip && ip !== "" && ip !== "0.0.0.0") {
-                    // แอบยัด URL ของบอร์ดเข้าไปในปุ่มวินาทีสุดท้ายก่อนจะโหลด
-                    document.getElementById('downloadBtn').href = "http://" + ip + "/api/logs";
+            document.getElementById("sdLogHouseName").innerText = house;
+            document.getElementById("sdModalStatus").innerText = "พยายามดึงข้อมูลอัตโนมัติในวง LAN...";
+            document.getElementById("sdModalStatus").className = "ms-auto text-warning small fw-bold blink-text";
+            document.getElementById("sd-log-table-body").innerHTML = "<tr><td colspan='3' class='py-5 text-warning'>กำลังเชื่อมต่อตู้ ESP32... ⏳</td></tr>";
+            document.getElementById("fallbackUi").style.display = "none";
+            document.getElementById("csvFileInput").value = "";
+            
+            var sdModal = new bootstrap.Modal(document.getElementById('sdLogModal'));
+            sdModal.show();
+
+            // 1. ยิงไปให้ Python ใช้โค้ดพิเศษดึง
+            fetch('/api/sd_logs?house=' + house)
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById("sdModalStatus").classList.remove("blink-text");
+                
+                if (data.status === "ok") {
+                    // 🟢 โค้ดพิเศษทำงานสำเร็จ (แสดงว่ารัน Local อยู่ในวง LAN)
+                    currentSdLogs = data.logs;
+                    updateFilterAndRender();
+                    document.getElementById("sdModalStatus").innerText = `✅ ดึงข้อมูลวง LAN สำเร็จ!`;
+                    document.getElementById("sdModalStatus").className = "ms-auto text-success small fw-bold";
+                } 
+                else if (data.status === "fallback") {
+                    // 🟠 ดึงไม่สำเร็จ (แสดงว่ารันบน Render/Cloud) -> โชว์กล่องให้ Copy URL
+                    document.getElementById("sdModalStatus").innerText = `⚠️ ใช้งานผ่านระบบ Cloud`;
+                    document.getElementById("sdModalStatus").className = "ms-auto text-danger small fw-bold";
+                    document.getElementById("sd-log-table-body").innerHTML = "<tr><td colspan='3' class='py-5 text-muted'>โปรดทำตามขั้นตอน 1-2-3 ด้านบนเพื่อนำเข้าไฟล์ประวัติ</td></tr>";
                     
-                    document.getElementById('csvStatus').className = "text-success small fw-bold ms-auto";
-                    document.getElementById('csvStatus').innerText = "✅ เปิดหน้าดาวน์โหลดแล้ว! นำไฟล์มากด Choose File ได้เลย";
-                    
-                    return true; // ยอมให้เบราว์เซอร์เปิดลิงก์แบบปกติ
-                } else {
-                    alert("⚠️ ยังไม่ได้รับ IP ของตู้ " + house + " ครับ กรุณารอระบบอัปเดตข้อมูลสักครู่");
-                    return false;
+                    document.getElementById("manualUrl").value = "http://" + data.ip + "/api/logs";
+                    document.getElementById("fallbackUi").style.display = "block";
+                } 
+                else {
+                    document.getElementById("sdModalStatus").innerText = "❌ ขัดข้อง";
+                    document.getElementById("sdModalStatus").className = "ms-auto text-danger small fw-bold";
+                    document.getElementById("sd-log-table-body").innerHTML = `<tr><td colspan='3' class='text-danger py-4'>❌ ${data.message}</td></tr>`;
                 }
-            } else {
-                alert("⚠️ กำลังโหลดข้อมูล กรุณารอสักครู่");
-                return false;
-            }
+            })
+            .catch(err => {
+                document.getElementById("sdModalStatus").classList.remove("blink-text");
+                document.getElementById("sdModalStatus").innerText = "❌ เซิร์ฟเวอร์ไม่ตอบสนอง";
+            });
         }
 
+        // ฟังก์ชันเมื่อกดปุ่มคัดลอก
+        function copyUrl() {
+            var copyText = document.getElementById("manualUrl");
+            copyText.select();
+            document.execCommand("copy");
+            alert("คัดลอกลิงก์สำเร็จ! เปิดแท็บใหม่แล้วกด วางและไป (Paste and Go) ได้เลยครับ");
+        }
+
+        // ฟังก์ชันเมื่อกดปุ่มนำเข้าไฟล์ CSV (โหมด Fallback)
         document.getElementById('csvFileInput').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (!file) return;
 
-            document.getElementById('csvStatus').innerText = "กำลังอ่านไฟล์แนบ...";
+            document.getElementById('sdModalStatus').innerText = "กำลังแปลงข้อมูล...";
             const reader = new FileReader();
             reader.onload = function(event) {
-                parseAndDisplayCSV(event.target.result);
-                document.getElementById('csvStatus').className = "text-success small fw-bold ms-auto";
-                document.getElementById('csvStatus').innerText = `✅ โหลดไฟล์สำเร็จ (${globalCsvData.length} บรรทัด)`;
+                const text = event.target.result;
+                const lines = text.split('\\n');
+                currentSdLogs = [];
+                
+                for (let i = 1; i < lines.length; i++) {
+                    const row = lines[i].trim();
+                    if (!row) continue;
+                    const cols = row.split(',');
+                    if (cols.length >= 3) {
+                        currentSdLogs.push({
+                            "เวลา": cols[0].trim(),
+                            "อุปกรณ์": cols[1].trim(),
+                            "สถานะ": cols[2].trim()
+                        });
+                    }
+                }
+                
+                updateFilterAndRender();
+                document.getElementById('sdModalStatus').className = "text-success small fw-bold ms-auto";
+                document.getElementById('sdModalStatus').innerText = `✅ นำเข้าไฟล์สำเร็จ`;
             };
             reader.readAsText(file);
         });
 
-        function parseAndDisplayCSV(text) {
-            const lines = text.split('\\n');
-            globalCsvData = [];
+        function updateFilterAndRender() {
             let uniqueDevices = new Set();
-
-            for (let i = 1; i < lines.length; i++) {
-                const row = lines[i].trim();
-                if (!row) continue;
-                
-                const cols = row.split(',');
-                if (cols.length >= 3) {
-                    const time = cols[0].trim();
-                    const device = cols[1].trim();
-                    const status = cols[2].trim();
-                    globalCsvData.push({ time, device, status });
-                    uniqueDevices.add(device);
-                }
-            }
-
+            currentSdLogs.forEach(log => uniqueDevices.add(log.อุปกรณ์));
+            
             let filterHtml = '<option value="ทั้งหมด">ทุกอุปกรณ์</option>';
             Array.from(uniqueDevices).sort().forEach(dev => {
                 filterHtml += `<option value="${dev}">${dev}</option>`;
             });
             document.getElementById('modalDeviceFilter').innerHTML = filterHtml;
-            renderCsvTable();
+            
+            renderSDTable();
         }
 
-        function renderCsvTable() {
+        function renderSDTable() {
             const filterDev = document.getElementById('modalDeviceFilter').value;
             let html = '';
             let count = 0;
 
-            const reversedData = [...globalCsvData].reverse();
-            reversedData.forEach(row => {
-                if (filterDev === "ทั้งหมด" || row.device === filterDev) {
+            const reversedData = [...currentSdLogs].reverse();
+            reversedData.forEach(log => {
+                if (filterDev === "ทั้งหมด" || log.อุปกรณ์ === filterDev) {
                     count++;
-                    let stStr = row.status.toUpperCase();
+                    let stStr = log.สถานะ.toUpperCase();
                     let statusColor = "text-success";
                     if (stStr.includes("ERROR") || stStr.includes("TRIGGER") || stStr.includes("HIGH") || stStr.includes("LOW")) {
                         statusColor = "text-danger";
-                    } else if (row.device === "SYSTEM") {
+                    } else if (log.อุปกรณ์ === "SYSTEM") {
                         statusColor = "text-warning";
                     }
-                    html += `<tr><td>${row.time}</td><td>${row.device}</td><td class="${statusColor} fw-bold">${row.status}</td></tr>`;
+                    html += `<tr><td>${log.เวลา}</td><td>${log.อุปกรณ์}</td><td class="${statusColor} fw-bold">${log.สถานะ}</td></tr>`;
                 }
             });
 
             if (count === 0) {
-                html = "<tr><td colspan='3' class='py-5 text-warning'>ไม่พบข้อมูลที่ตรงกับเงื่อนไข</td></tr>";
+                html = "<tr><td colspan='3' class='py-5 text-warning'>ไม่พบข้อมูล</td></tr>";
             }
-            document.getElementById('csv-table-body').innerHTML = html;
+            document.getElementById('sd-log-table-body').innerHTML = html;
         }
 
-        document.getElementById('modalDeviceFilter').addEventListener('change', renderCsvTable);
+        document.getElementById('modalDeviceFilter').addEventListener('change', renderSDTable);
 
         function updateData() {
             let spinner = document.getElementById("loadingSpinner");
@@ -363,8 +429,6 @@ HTML_PAGE = """
             spinner.style.display = "inline-block";
             
             fetch('/api/data?t=' + Date.now()).then(res => res.json()).then(data => {
-                currentGlobalData = data; 
-
                 setTimeout(() => {
                     spinner.style.display = "none";
                     clock.className = "badge bg-success fs-6";
