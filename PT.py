@@ -3,6 +3,8 @@ import threading
 import time
 import urllib.request
 import json
+import csv
+import io
 import sys
 from datetime import datetime
 from flask import Flask, jsonify, request, render_template_string
@@ -93,7 +95,8 @@ def on_mqtt_message(client, userdata, msg):
                                 sensor["status"] = st
                                 break
                                     
-                    if s not in ["Temp", "Hum"] and "NORMAL" not in st.upper():
+                    # 🟢 [แก้ไขใหม่] อนุญาตให้เก็บทั้ง ERROR และ NORMAL ลงตารางแจ้งเตือน
+                    if s not in ["Temp", "Hum"]:
                         time_str = datetime.now().strftime("%H:%M:%S")
                         logs_data.insert(0, {"เวลา": time_str, "โรงเรือน": house, "อุปกรณ์": s, "สถานะ": st})
                         if len(logs_data) > 100: logs_data.pop()
@@ -102,7 +105,6 @@ def on_mqtt_message(client, userdata, msg):
 
 def mqtt_background_thread():
     try:
-        # ✅ แก้ไขตรงนี้เป็น CallbackAPIVersion (API ตัวพิมพ์ใหญ่) เพื่อให้ตรงกับ paho-mqtt v2.0.0
         client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
     except AttributeError:
         client = mqtt.Client()
@@ -120,20 +122,15 @@ def mqtt_background_thread():
             print(f"[-] MQTT Network Error: {e}. Retrying in 5s...")
             time.sleep(5)
 
-@app.route('/api/sd_logs')
-def get_sd_logs():
+# 🟢 [แก้ไขใหม่] สร้าง API สำหรับขอ IP ของบอร์ดเท่านั้น 
+# เพื่อให้เบราว์เซอร์วิ่งไปโหลดไฟล์เอง โดยไม่ต้องผ่าน Cloud
+@app.route('/api/get_board_ip')
+def get_board_ip():
     house = request.args.get('house')
     if house not in houses_data or not houses_data[house]["ip"]:
-        return jsonify({"status": "error", "message": "บอร์ดเพิ่งเปิด หรือยังไม่ได้รับ IP ผ่านเครือข่าย (รอสักครู่แล้วลองใหม่)"})
+        return jsonify({"status": "error", "message": "บอร์ดเพิ่งเปิด หรือยังไม่ได้รับ IP ผ่านเครือข่าย (รอให้ข้อมูลอัปเดตสักครู่)"})
     
-    ip = houses_data[house]["ip"]
-    try:
-        req = urllib.request.Request(f"http://{ip}/api/logs", method="GET")
-        with urllib.request.urlopen(req, timeout=8) as response:
-            csv_data = response.read().decode('utf-8')
-        return jsonify({"status": "ok", "csv": csv_data})
-    except Exception as e:
-        return jsonify({"status": "error", "message": "เชื่อมต่อบอร์ดไม่สำเร็จ (โปรดแน่ใจว่าเครื่องนี้อยู่ในวง LAN เดียวกับบอร์ด)"})
+    return jsonify({"status": "ok", "ip": houses_data[house]["ip"]})
 
 @app.route('/api/data')
 def api_data(): 
@@ -196,7 +193,7 @@ HTML_PAGE = """
 
         <div class="card text-bg-dark border-secondary mt-2 mb-5">
             <div class="card-header fw-bold d-flex flex-wrap justify-content-between align-items-center gap-2" style="background-color: #1f2937;">
-                <h5 class="mb-0 text-light">🕒 การแจ้งเตือนล่าสุด (เฉพาะ ERROR)</h5>
+                <h5 class="mb-0 text-light">🕒 การแจ้งเตือนล่าสุด (ทั้งระบบ)</h5>
                 <div class="d-flex gap-2 align-items-center">
                     <button class="btn btn-sm btn-outline-success fw-bold" onclick="openCsvModal()">📂 เปิดประวัติจากไฟล์ SD Card</button>
                     <select id="filterHouse" class="form-select form-select-sm w-auto bg-dark text-white border-secondary">
@@ -233,9 +230,9 @@ HTML_PAGE = """
                 </div>
                 <div class="modal-body p-3">
                     <div class="d-flex gap-2 mb-3 align-items-center flex-wrap" style="background: #1a1a1a; padding: 10px; border-radius: 8px; border: 1px solid #444;">
-                        <button class="btn btn-success fw-bold btn-sm" onclick="loadFromBoard()">⬇️ ดึงข้อมูลข้าม LAN อัตโนมัติ</button>
+                        <button class="btn btn-success fw-bold btn-sm" onclick="loadFromBoard()">⬇️ ดาวน์โหลดไฟล์จากบอร์ด (วง LAN เดียวกัน)</button>
                         <div class="vr mx-1"></div>
-                        <span class="text-muted small">หรือนำเข้าไฟล์:</span>
+                        <span class="text-muted small">หรือเลือกไฟล์ที่โหลดมา:</span>
                         <input type="file" id="csvFileInput" accept=".csv" class="form-control form-control-sm w-auto bg-dark text-white border-secondary">
                         <div class="vr mx-1 bg-secondary"></div>
                         <label class="text-info fw-bold small">กรองอุปกรณ์:</label>
@@ -251,7 +248,7 @@ HTML_PAGE = """
                                 <tr><th>วัน/เวลา</th><th>อุปกรณ์</th><th>สถานะ</th></tr>
                             </thead>
                             <tbody id="csv-table-body">
-                                <tr><td colspan='3' class='py-5 text-muted'>กดปุ่ม 'ดึงข้อมูลอัตโนมัติ' หรือเลือกไฟล์เพื่อแสดงผล...</td></tr>
+                                <tr><td colspan='3' class='py-5 text-muted'>กดปุ่ม 'ดาวน์โหลดไฟล์' หรือเลือกไฟล์เพื่อแสดงผล...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -268,36 +265,36 @@ HTML_PAGE = """
             myModal.show();
         }
 
+        // 🟢 [แก้ไขใหม่] ให้เบราว์เซอร์วิ่งไปเปิด IP ของบอร์ดเพื่อดาวน์โหลดไฟล์เอง
         function loadFromBoard() {
             let house = document.getElementById("filterHouse").value;
             if (house === "ทั้งหมด") {
-                alert("กรุณาเลือกชื่อโรงเรือน (เช่น H2) ที่ช่องตัวกรองด้านหน้าก่อนครับ เพื่อให้ระบบรู้ว่าจะดึงไฟล์ของใคร");
+                alert("กรุณาเลือกชื่อโรงเรือน (เช่น H2) ที่ช่องตัวกรองด้านหน้าก่อนครับ เพื่อระบุว่าจะดึงไฟล์ของบอร์ดไหน");
                 return;
             }
             
             document.getElementById('csvStatus').className = "text-warning small fw-bold ms-auto blink-text";
-            document.getElementById('csvStatus').innerText = "กำลังเชื่อมต่อบอร์ดเพื่อดึงข้อมูล...";
-            document.getElementById('csv-table-body').innerHTML = "<tr><td colspan='3' class='py-5 text-warning'>กำลังดาวน์โหลดไฟล์จากบอร์ด ESP32... ⏳</td></tr>";
+            document.getElementById('csvStatus').innerText = "กำลังค้นหา IP ของบอร์ด...";
             
-            fetch('/api/sd_logs?house=' + house)
+            fetch('/api/get_board_ip?house=' + house)
             .then(res => res.json())
             .then(data => {
                 document.getElementById('csvStatus').classList.remove("blink-text");
                 if (data.status === "ok") {
-                    parseAndDisplayCSV(data.csv);
+                    // สั่งเปิด URL ของบอร์ดในแท็บใหม่ เพื่อดาวน์โหลดไฟล์เข้าคอม
+                    window.open("http://" + data.ip + "/api/logs", "_blank");
+                    
                     document.getElementById('csvStatus').className = "text-success small fw-bold ms-auto";
-                    document.getElementById('csvStatus').innerText = `✅ ดึงข้อมูลสำเร็จ (${globalCsvData.length} บรรทัด)`;
+                    document.getElementById('csvStatus').innerText = "✅ ดาวน์โหลดสำเร็จ! ให้นำไฟล์ที่ได้มากดปุ่ม 'Choose File' ทางซ้ายมือเพื่อเปิดดูครับ";
                 } else {
                     document.getElementById('csvStatus').className = "text-danger small fw-bold ms-auto";
-                    document.getElementById('csvStatus').innerText = "❌ ล้มเหลว";
-                    document.getElementById('csv-table-body').innerHTML = `<tr><td colspan='3' class='py-5 text-danger'>❌ ${data.message}</td></tr>`;
+                    document.getElementById('csvStatus').innerText = "❌ ล้มเหลว: " + data.message;
                 }
             })
             .catch(err => {
                 document.getElementById('csvStatus').classList.remove("blink-text");
                 document.getElementById('csvStatus').className = "text-danger small fw-bold ms-auto";
-                document.getElementById('csvStatus').innerText = "❌ ขัดข้อง";
-                document.getElementById('csv-table-body').innerHTML = `<tr><td colspan='3' class='py-5 text-danger'>❌ ขาดการเชื่อมต่อเครือข่าย</td></tr>`;
+                document.getElementById('csvStatus').innerText = "❌ ขัดข้องในการเชื่อมต่อระบบหลังบ้าน";
             });
         }
 
@@ -435,7 +432,7 @@ HTML_PAGE = """
                 let rowsHtml = ""; let count = 0;
                 
                 if (data.logs.length === 0) {
-                    rowsHtml = "<tr><td colspan='4' class='text-muted py-4'>💡 ระบบปกติ ยังไม่มีการแจ้งเตือน ERROR</td></tr>";
+                    rowsHtml = "<tr><td colspan='4' class='text-muted py-4'>💡 ระบบปกติ ยังไม่มีการแจ้งเตือน</td></tr>";
                 } else {
                     data.logs.forEach(log => {
                         let matchHouse = (filterHouse === "ทั้งหมด" || log.โรงเรือน === filterHouse);
