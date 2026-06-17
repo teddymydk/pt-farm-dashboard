@@ -36,7 +36,6 @@ def add_header(response):
     response.headers['Expires'] = '-1'
     return response
 
-# 🟢 [เพิ่มใหม่] โลจิกเมื่อเชื่อมต่อสำเร็จ ให้บังคับดักฟังข้อมูลทันที
 def on_connect(client, userdata, flags, rc, *args):
     if rc == 0:
         print("[*] MQTT Connected! Ready to receive data globally.")
@@ -103,12 +102,13 @@ def on_mqtt_message(client, userdata, msg):
 
 def mqtt_background_thread():
     try:
-        client = mqtt.Client(callback_api_version=mqtt.CallbackApiVersion.VERSION2)
+        # ✅ แก้ไขตรงนี้เป็น CallbackAPIVersion (API ตัวพิมพ์ใหญ่) เพื่อให้ตรงกับ paho-mqtt v2.0.0
+        client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
     except AttributeError:
         client = mqtt.Client()
         
-    client.on_connect = on_connect       # 🟢 เรียกใช้ฟังก์ชันเชื่อมต่อใหม่
-    client.on_disconnect = on_disconnect # 🟢 เรียกใช้ฟังก์ชันหลุดการเชื่อมต่อ
+    client.on_connect = on_connect       
+    client.on_disconnect = on_disconnect 
     client.on_message = on_mqtt_message
     
     print("[*] Cloud System Starting... Connecting to MQTT...")
