@@ -3,8 +3,6 @@ import threading
 import time
 import urllib.request
 import json
-import csv
-import io
 import sys
 from datetime import datetime
 from flask import Flask, jsonify, request, render_template_string
@@ -37,6 +35,18 @@ def add_header(response):
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '-1'
     return response
+
+# 🟢 [เพิ่มใหม่] โลจิกเมื่อเชื่อมต่อสำเร็จ ให้บังคับดักฟังข้อมูลทันที
+def on_connect(client, userdata, flags, rc, *args):
+    if rc == 0:
+        print("[*] MQTT Connected! Ready to receive data globally.")
+        client.subscribe(MQTT_TOPIC_SYNC)
+        client.subscribe(MQTT_TOPIC_ALERT)
+    else:
+        print(f"[-] MQTT Connection failed with code {rc}")
+
+def on_disconnect(client, userdata, rc, *args):
+    print(f"[-] MQTT Disconnected! (Code: {rc}) Reconnecting...")
 
 def on_mqtt_message(client, userdata, msg):
     global houses_data, logs_data
@@ -97,17 +107,17 @@ def mqtt_background_thread():
     except AttributeError:
         client = mqtt.Client()
         
+    client.on_connect = on_connect       # 🟢 เรียกใช้ฟังก์ชันเชื่อมต่อใหม่
+    client.on_disconnect = on_disconnect # 🟢 เรียกใช้ฟังก์ชันหลุดการเชื่อมต่อ
     client.on_message = on_mqtt_message
+    
     print("[*] Cloud System Starting... Connecting to MQTT...")
     while True:
         try:
             client.connect(MQTT_BROKER, MQTT_PORT, 60)
-            client.subscribe(MQTT_TOPIC_SYNC)
-            client.subscribe(MQTT_TOPIC_ALERT)
-            print("[*] MQTT Connected! Ready to receive data globally.")
             client.loop_forever()
         except Exception as e:
-            print(f"[-] MQTT Connection dropped. Reconnecting in 5s...")
+            print(f"[-] MQTT Network Error: {e}. Retrying in 5s...")
             time.sleep(5)
 
 @app.route('/api/sd_logs')
