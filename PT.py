@@ -38,27 +38,13 @@ def add_header(response):
     response.headers['Expires'] = '-1'
     return response
 
-def on_connect(client, userdata, flags, rc, *args):
-    if rc == 0:
-        print("[*] MQTT Connected! Ready to receive data globally.")
-        client.subscribe(MQTT_TOPIC_SYNC)
-        client.subscribe(MQTT_TOPIC_ALERT)
-    else:
-        print(f"[-] MQTT Connection failed with code {rc}")
-
-def on_disconnect(client, userdata, rc, *args):
-    print(f"[-] MQTT Disconnected! (Code: {rc}) Reconnecting...")
-
 def on_mqtt_message(client, userdata, msg):
-    global houses_data, logs_data
     try:
         raw_data = msg.payload.decode('utf-8')
-        
-        if "sync" not in msg.topic:
-            print(f"\n[MQTT ALERT] Topic: {msg.topic} -> Data: {raw_data}")
+        if "sync" in msg.topic:
+            pass 
         else:
-            house_str = msg.topic.split('/')[1]
-            print(f"[MQTT SYNC] ได้รับข้อมูลอัปเดตจากโรงเรือน: {house_str}")
+            print(f"\n[MQTT] Topic: {msg.topic} -> Data: {raw_data}")
             
         payload = json.loads(raw_data)
         if payload.get("secret") == SECRET_KEY:
@@ -95,13 +81,12 @@ def on_mqtt_message(client, userdata, msg):
                                 sensor["status"] = st
                                 break
                                     
-                    # เก็บ Log ทุกสถานะ (ทั้ง ERROR และ NORMAL)
-                    if s not in ["Temp", "Hum"]:
+                    if s not in ["Temp", "Hum"] and "NORMAL" not in st.upper():
                         time_str = datetime.now().strftime("%H:%M:%S")
                         logs_data.insert(0, {"เวลา": time_str, "โรงเรือน": house, "อุปกรณ์": s, "สถานะ": st})
                         if len(logs_data) > 100: logs_data.pop()
     except Exception as e:
-        print(f"[ERROR] on_mqtt_message: {e}")
+        pass
 
 def mqtt_background_thread():
     try:
@@ -109,45 +94,18 @@ def mqtt_background_thread():
     except AttributeError:
         client = mqtt.Client()
         
-    client.on_connect = on_connect       
-    client.on_disconnect = on_disconnect 
     client.on_message = on_mqtt_message
-    
     print("[*] Cloud System Starting... Connecting to MQTT...")
     while True:
         try:
             client.connect(MQTT_BROKER, MQTT_PORT, 60)
+            client.subscribe(MQTT_TOPIC_SYNC)
+            client.subscribe(MQTT_TOPIC_ALERT)
+            print("[*] MQTT Connected! Ready to receive data globally.")
             client.loop_forever()
         except Exception as e:
-            print(f"[-] MQTT Network Error: {e}. Retrying in 5s...")
+            print(f"[-] MQTT Connection dropped. Reconnecting in 5s...")
             time.sleep(5)
-
-# 🟢 [นำโค้ดดึง SD Card จากเวอร์ชันเก่ากลับมาใส่]
-@app.route('/api/sd_logs')
-def get_sd_logs():
-    house = request.args.get('house')
-    if house not in houses_data or not houses_data[house]["ip"]:
-        return jsonify({"status": "error", "message": "ยังไม่ได้รับสัญญาณจากโรงเรือนนี้ (บอร์ดอาจจะปิดอยู่ หรือยังไม่ได้ IP)"})
-    
-    ip = houses_data[house]["ip"]
-    try:
-        req = urllib.request.Request(f"http://{ip}/api/logs", method="GET")
-        with urllib.request.urlopen(req, timeout=8) as response:
-            csv_data = response.read().decode('utf-8')
-            
-        parsed_logs = []
-        reader = csv.reader(io.StringIO(csv_data))
-        next(reader, None) # ข้ามบรรทัด Header (Date/Time,Channel,Status)
-        for row in reader:
-            if len(row) >= 3:
-                parsed_logs.insert(0, {
-                    "เวลา": row[0],
-                    "อุปกรณ์": row[1],
-                    "สถานะ": row[2]
-                })
-        return jsonify({"status": "ok", "logs": parsed_logs})
-    except Exception as e:
-        return jsonify({"status": "error", "message": "เชื่อมต่อบอร์ดไม่สำเร็จ หรือไม่พบไฟล์ประวัติ"})
 
 @app.route('/api/data')
 def api_data(): 
@@ -210,11 +168,21 @@ HTML_PAGE = """
 
         <div class="card text-bg-dark border-secondary mt-2 mb-5">
             <div class="card-header fw-bold d-flex flex-wrap justify-content-between align-items-center gap-2" style="background-color: #1f2937;">
-                <h5 class="mb-0 text-light">🕒 การแจ้งเตือนล่าสุด</h5>
+                <h5 class="mb-0 text-light">🕒 การแจ้งเตือนล่าสุด (เฉพาะ ERROR)</h5>
                 <div class="d-flex gap-2 align-items-center">
-                    <button class="btn btn-sm btn-outline-success fw-bold" onclick="openSDModal()">
-                        📂 ดูประวัติทั้งหมดจาก SD Card
-                    </button>
+                    
+                    <div class="dropdown d-inline-block">
+                        <button class="btn btn-sm btn-outline-secondary fw-bold dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                            📂 โหลดประวัติ SD Card (ผ่าน LAN)
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-dark">
+                            <li><a class="dropdown-item" href="#" onclick="downloadCSV('H1')">โหลดของโรงเรือน H1</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="downloadCSV('H2')">โหลดของโรงเรือน H2</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="downloadCSV('H3')">โหลดของโรงเรือน H3</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="downloadCSV('H4')">โหลดของโรงเรือน H4</a></li>
+                        </ul>
+                    </div>
+
                     <select id="filterHouse" class="form-select form-select-sm w-auto bg-dark text-white border-secondary">
                         <option value="ทั้งหมด">ทุกโรงเรือน</option>
                         <option value="H1">H1</option>
@@ -237,68 +205,9 @@ HTML_PAGE = """
         </div>
     </div>
 
-    <div class="modal fade" id="sdLogModal" tabindex="-1">
-        <div class="modal-dialog modal-lg">
-            <div class="modal-content bg-dark text-white border-secondary">
-                <div class="modal-header border-secondary" style="background-color: #1f2937;">
-                    <h5 class="modal-title text-success">📂 ประวัติจาก SD Card (โรงเรือน: <span id="sdLogHouseName"></span>)</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body p-0">
-                    <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
-                        <table class="table table-dark table-hover table-striped mb-0 text-center">
-                            <thead style="position: sticky; top: 0; z-index: 1;">
-                                <tr>
-                                    <th>วัน/เวลา</th>
-                                    <th>อุปกรณ์</th>
-                                    <th>สถานะ</th>
-                                </tr>
-                            </thead>
-                            <tbody id="sd-log-table-body">
-                                <tr><td colspan='3' class='py-5 text-warning'>กำลังเชื่อมต่อ ESP32 และดาวน์โหลดข้อมูล... ⏳</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <script>
-        function openSDModal() {
-            let house = document.getElementById("filterHouse").value;
-            if (house === "ทั้งหมด") {
-                alert("กรุณาเลือกโรงเรือน (H1-H4) ในช่องตัวกรองก่อนครับ เพื่อระบุว่าจะดูประวัติของตู้คอนโทรลไหน");
-                return;
-            }
-            document.getElementById("sdLogHouseName").innerText = house;
-            document.getElementById("sd-log-table-body").innerHTML = "<tr><td colspan='3' class='py-5 text-warning'>กำลังเชื่อมต่อ ESP32 และดาวน์โหลดข้อมูล... ⏳</td></tr>";
-            
-            var sdModal = new bootstrap.Modal(document.getElementById('sdLogModal'));
-            sdModal.show();
-
-            fetch('/api/sd_logs?house=' + house)
-            .then(res => res.json())
-            .then(data => {
-                if (data.status === "ok") {
-                    let html = "";
-                    if(data.logs.length === 0) {
-                        html = "<tr><td colspan='3' class='py-4 text-muted'>ว่างเปล่า (ยังไม่มีประวัติใน SD Card)</td></tr>";
-                    } else {
-                        data.logs.forEach(log => {
-                            let statusColor = log.สถานะ.includes("ERROR") || log.สถานะ.includes("TRIGGER") || log.สถานะ.includes("HIGH") || log.สถานะ.includes("LOW") ? "text-danger" : "text-success";
-                            if(log.อุปกรณ์ === "SYSTEM") statusColor = "text-warning";
-                            html += `<tr><td>${log.เวลา}</td><td>${log.อุปกรณ์}</td><td class="${statusColor} fw-bold">${log.สถานะ}</td></tr>`;
-                        });
-                    }
-                    document.getElementById("sd-log-table-body").innerHTML = html;
-                } else {
-                    document.getElementById("sd-log-table-body").innerHTML = `<tr><td colspan='3' class='text-danger py-4'>❌ ดึงข้อมูลล้มเหลว: ${data.message}</td></tr>`;
-                }
-            }).catch(err => {
-                document.getElementById("sd-log-table-body").innerHTML = `<tr><td colspan='3' class='text-danger py-4'>❌ ขาดการเชื่อมต่อกับหลังบ้าน (Backend)</td></tr>`;
-            });
-        }
+        // ตัวแปรสำหรับเก็บข้อมูล IP ล่าสุดของแต่ละตู้
+        let latestHousesData = {};
 
         function updateData() {
             let spinner = document.getElementById("loadingSpinner");
@@ -306,6 +215,8 @@ HTML_PAGE = """
             spinner.style.display = "inline-block";
             
             fetch('/api/data?t=' + Date.now()).then(res => res.json()).then(data => {
+                latestHousesData = data.houses; // อัปเดตข้อมูลตู้เพื่อนำ IP ไปใช้งานตอนโหลดไฟล์
+                
                 setTimeout(() => {
                     spinner.style.display = "none";
                     clock.className = "badge bg-success fs-6";
@@ -352,7 +263,7 @@ HTML_PAGE = """
                 let rowsHtml = ""; let count = 0;
                 
                 if (data.logs.length === 0) {
-                    rowsHtml = "<tr><td colspan='4' class='text-muted py-4'>💡 ระบบปกติ ยังไม่มีการแจ้งเตือน</td></tr>";
+                    rowsHtml = "<tr><td colspan='4' class='text-muted py-4'>💡 ระบบปกติ ยังไม่มีการแจ้งเตือน ERROR</td></tr>";
                 } else {
                     data.logs.forEach(log => {
                         let matchHouse = (filterHouse === "ทั้งหมด" || log.โรงเรือน === filterHouse);
@@ -373,6 +284,26 @@ HTML_PAGE = """
             });
         }
         
+        // ฟังก์ชันสำหรับเปิดแท็บใหม่ วิ่งตรงไปหาตู้ ESP32 ตาม IP ที่ได้จาก MQTT
+        function downloadCSV(house) {
+            let houseData = latestHousesData[house];
+            
+            if (!houseData || !houseData.ip || houseData.ip === "") {
+                alert("⚠️ ยังไม่ได้รับ IP ของโรงเรือน " + house + " กรุณารอให้ตู้ส่งข้อมูลเข้าระบบสักครู่ครับ");
+                return;
+            }
+            
+            if (houseData.ip === "0.0.0.0") {
+                alert("⚠️ ตู้คอนโทรล " + house + " ยังไม่ได้เชื่อมต่อ Wi-Fi ครับ");
+                return;
+            }
+
+            let confirmMsg = "กำลังเชื่อมต่อไปที่ตู้ " + house + " (IP: " + houseData.ip + ")\\n\\nคุณเชื่อมต่อ Wi-Fi วงเดียวกันกับที่ฟาร์มนาคำอยู่ใช่ไหม?";
+            if (confirm(confirmMsg)) {
+                window.open("http://" + houseData.ip + "/api/logs", "_blank");
+            }
+        }
+        
         document.getElementById("filterHouse").addEventListener("change", updateData);
         setInterval(updateData, 1000); 
         updateData();
@@ -387,5 +318,7 @@ def index():
 
 if __name__ == "__main__":
     threading.Thread(target=mqtt_background_thread, daemon=True).start()
+    
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
