@@ -1,6 +1,7 @@
 import os
 import threading
 import time
+import urllib.request
 import json
 import csv
 import io
@@ -221,11 +222,10 @@ HTML_PAGE = """
                 <div class="modal-body p-3">
                     <div class="d-flex gap-2 mb-3 align-items-center flex-wrap" style="background: #1a1a1a; padding: 10px; border-radius: 8px; border: 1px solid #444;">
                         
-                        <button class="btn btn-primary fw-bold btn-sm" onclick="openTabToBoard()">⬇️ 1. โหลดไฟล์จากตู้ (เปิดแท็บใหม่)</button>
+                        <a id="downloadBtn" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-primary fw-bold btn-sm" onclick="return prepareDownloadLink()">⬇️ 1. โหลดไฟล์จากตู้</a>
                         
                         <div class="vr mx-1"></div>
-                        <span class="text-muted small">2. นำเข้าไฟล์:</span>
-                        
+                        <span class="text-muted small">2. นำเข้าไฟล์ที่โหลดมา:</span>
                         <input type="file" id="csvFileInput" accept=".csv" class="form-control form-control-sm w-auto bg-dark text-white border-secondary">
                         
                         <div class="vr mx-1 bg-secondary"></div>
@@ -253,34 +253,41 @@ HTML_PAGE = """
 
     <script>
         let globalCsvData = [];
-        let currentGlobalData = null; // ตัวแปรเก็บข้อมูลเพื่อดึง IP
+        let currentGlobalData = null; 
 
         function openCsvModal() {
             var myModal = new bootstrap.Modal(document.getElementById('csvModal'));
             myModal.show();
         }
 
-        // 🟢 ฟังก์ชันสั่งเปิดแท็บใหม่พาไปโหลดไฟล์ตรงๆ จากบอร์ด
-        function openTabToBoard() {
+        // 🟢 ฟังก์ชันเตรียมลิงก์ก่อนที่เบราว์เซอร์จะเปิด (แก้อาการ Chrome บล็อก)
+        function prepareDownloadLink() {
             let house = document.getElementById("filterHouse").value;
             if (house === "ทั้งหมด") {
                 alert("⚠️ กรุณาเลือกชื่อโรงเรือน (H1-H4) ที่ช่องตัวกรองด้านหน้าก่อนครับ");
-                return;
+                return false; // ห้ามลิงก์ทำงาน
             }
             
             if (currentGlobalData && currentGlobalData.houses && currentGlobalData.houses[house]) {
                 let ip = currentGlobalData.houses[house].ip;
                 if (ip && ip !== "" && ip !== "0.0.0.0") {
-                    window.open("http://" + ip + "/api/logs", "_blank");
+                    // แอบยัด URL ของบอร์ดเข้าไปในปุ่มวินาทีสุดท้ายก่อนจะโหลด
+                    document.getElementById('downloadBtn').href = "http://" + ip + "/api/logs";
+                    
+                    document.getElementById('csvStatus').className = "text-success small fw-bold ms-auto";
+                    document.getElementById('csvStatus').innerText = "✅ เปิดหน้าดาวน์โหลดแล้ว! นำไฟล์มากด Choose File ได้เลย";
+                    
+                    return true; // ยอมให้เบราว์เซอร์เปิดลิงก์แบบปกติ
                 } else {
                     alert("⚠️ ยังไม่ได้รับ IP ของตู้ " + house + " ครับ กรุณารอระบบอัปเดตข้อมูลสักครู่");
+                    return false;
                 }
             } else {
                 alert("⚠️ กำลังโหลดข้อมูล กรุณารอสักครู่");
+                return false;
             }
         }
 
-        // ฟังก์ชัน Import ไฟล์
         document.getElementById('csvFileInput').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (!file) return;
@@ -350,14 +357,13 @@ HTML_PAGE = """
 
         document.getElementById('modalDeviceFilter').addEventListener('change', renderCsvTable);
 
-        // ฟังก์ชันอัปเดตข้อมูล Real-time
         function updateData() {
             let spinner = document.getElementById("loadingSpinner");
             let clock = document.getElementById("liveClock");
             spinner.style.display = "inline-block";
             
             fetch('/api/data?t=' + Date.now()).then(res => res.json()).then(data => {
-                currentGlobalData = data; // เก็บค่าไว้ให้ปุ่มเปิดแท็บเรียกใช้ IP
+                currentGlobalData = data; 
 
                 setTimeout(() => {
                     spinner.style.display = "none";
