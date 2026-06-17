@@ -42,7 +42,7 @@ def on_mqtt_message(client, userdata, msg):
     try:
         raw_data = msg.payload.decode('utf-8')
         if "sync" in msg.topic:
-            pass 
+            pass # ซ่อนจุดไข่ปลาไว้ไม่ให้รก Log บนเซิร์ฟเวอร์
         else:
             print(f"\n[MQTT] Topic: {msg.topic} -> Data: {raw_data}")
             
@@ -90,7 +90,7 @@ def on_mqtt_message(client, userdata, msg):
 
 def mqtt_background_thread():
     try:
-        client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+        client = mqtt.Client(callback_api_version=mqtt.CallbackApiVersion.VERSION2)
     except AttributeError:
         client = mqtt.Client()
         
@@ -170,25 +170,16 @@ HTML_PAGE = """
             <div class="card-header fw-bold d-flex flex-wrap justify-content-between align-items-center gap-2" style="background-color: #1f2937;">
                 <h5 class="mb-0 text-light">🕒 การแจ้งเตือนล่าสุด (เฉพาะ ERROR)</h5>
                 <div class="d-flex gap-2 align-items-center">
-                    
-                    <div class="dropdown d-inline-block">
-                        <button class="btn btn-sm btn-outline-secondary fw-bold dropdown-toggle" type="button" data-bs-toggle="dropdown">
-                            📂 โหลดประวัติ SD Card (ผ่าน LAN)
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-dark">
-                            <li><a class="dropdown-item" href="#" onclick="downloadCSV('H1')">โหลดของโรงเรือน H1</a></li>
-                            <li><a class="dropdown-item" href="#" onclick="downloadCSV('H2')">โหลดของโรงเรือน H2</a></li>
-                            <li><a class="dropdown-item" href="#" onclick="downloadCSV('H3')">โหลดของโรงเรือน H3</a></li>
-                            <li><a class="dropdown-item" href="#" onclick="downloadCSV('H4')">โหลดของโรงเรือน H4</a></li>
-                        </ul>
-                    </div>
-
+                    <button class="btn btn-sm btn-outline-success fw-bold" onclick="openCsvModal()">📂 เปิดประวัติจากไฟล์ SD Card</button>
                     <select id="filterHouse" class="form-select form-select-sm w-auto bg-dark text-white border-secondary">
                         <option value="ทั้งหมด">ทุกโรงเรือน</option>
                         <option value="H1">H1</option>
                         <option value="H2">H2</option>
                         <option value="H3">H3</option>
                         <option value="H4">H4</option>
+                    </select>
+                    <select id="filterDevice" class="form-select form-select-sm w-auto bg-dark text-white border-secondary">
+                        <option value="ทั้งหมด">ทุกอุปกรณ์</option>
                     </select>
                 </div>
             </div>
@@ -205,23 +196,149 @@ HTML_PAGE = """
         </div>
     </div>
 
-    <script>
-        // ตัวแปรสำหรับเก็บข้อมูล IP ล่าสุดของแต่ละตู้
-        let latestHousesData = {};
+    <div class="modal fade" id="csvModal" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content bg-dark text-white border-secondary">
+                <div class="modal-header border-secondary" style="background-color: #1f2937;">
+                    <h5 class="modal-title text-success">📂 เปิดดูประวัติจากไฟล์ SD Card (CSV Viewer)</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body p-3">
+                    <div class="alert alert-secondary text-light bg-dark border-secondary p-2 mb-3" role="alert">
+                        💡 <b>วิธีใช้งาน:</b> ให้ดาวน์โหลดไฟล์ <code>alarm_log.csv</code> จากบอร์ด ESP32 มาไว้ที่เครื่องคอมพิวเตอร์ของคุณก่อน จากนั้นกดปุ่มเลือกไฟล์ด้านล่างเพื่อแสดงผล
+                    </div>
+                    <div class="d-flex gap-3 mb-3 align-items-center flex-wrap">
+                        <input type="file" id="csvFileInput" accept=".csv" class="form-control form-control-sm w-auto bg-dark text-white border-secondary">
+                        <select id="modalDeviceFilter" class="form-select form-select-sm w-auto bg-dark text-white border-secondary">
+                            <option value="ทั้งหมด">ทุกอุปกรณ์</option>
+                        </select>
+                        <span id="csvStatus" class="text-info small fw-bold"></span>
+                    </div>
+                    <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
+                        <table class="table table-dark table-hover table-striped mb-0 text-center">
+                            <thead style="position: sticky; top: 0; z-index: 1;">
+                                <tr>
+                                    <th>วัน/เวลา</th>
+                                    <th>อุปกรณ์</th>
+                                    <th>สถานะ</th>
+                                </tr>
+                            </thead>
+                            <tbody id="csv-table-body">
+                                <tr><td colspan='3' class='py-5 text-muted'>กรุณาเลือกไฟล์เพื่อแสดงผล...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
+    <script>
+        // ==========================================
+        // ระบบอ่านไฟล์ CSV อัตโนมัติในหน้าเว็บ (Frontend)
+        // ==========================================
+        let globalCsvData = [];
+
+        function openCsvModal() {
+            var myModal = new bootstrap.Modal(document.getElementById('csvModal'));
+            myModal.show();
+        }
+
+        document.getElementById('csvFileInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            document.getElementById('csvStatus').innerText = "กำลังอ่านไฟล์...";
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const text = event.target.result;
+                parseAndDisplayCSV(text);
+            };
+            reader.readAsText(file);
+        });
+
+        function parseAndDisplayCSV(text) {
+            const lines = text.split('\\n');
+            globalCsvData = [];
+            let uniqueDevices = new Set();
+
+            // เริ่มอ่านตั้งแต่บรรทัดที่ 2 (ข้าม Header Date/Time,Channel,Status)
+            for (let i = 1; i < lines.length; i++) {
+                const row = lines[i].trim();
+                if (!row) continue;
+                
+                // ใช้การตัดด้วยลูกน้ำ
+                const cols = row.split(',');
+                if (cols.length >= 3) {
+                    const time = cols[0].trim();
+                    const device = cols[1].trim();
+                    const status = cols[2].trim();
+                    globalCsvData.push({ time, device, status });
+                    uniqueDevices.add(device);
+                }
+            }
+
+            // จัดการ Dropdown กรองอุปกรณ์ในหน้าต่าง CSV
+            let filterHtml = '<option value="ทั้งหมด">ทุกอุปกรณ์</option>';
+            Array.from(uniqueDevices).sort().forEach(dev => {
+                filterHtml += `<option value="${dev}">${dev}</option>`;
+            });
+            document.getElementById('modalDeviceFilter').innerHTML = filterHtml;
+
+            renderCsvTable();
+            document.getElementById('csvStatus').innerText = `โหลดสำเร็จ (${globalCsvData.length} รายการ)`;
+        }
+
+        function renderCsvTable() {
+            const filterDev = document.getElementById('modalDeviceFilter').value;
+            let html = '';
+            let count = 0;
+
+            // พลิก Array ให้ข้อมูลใหม่ล่าสุด (ด้านล่างไฟล์ CSV) ขึ้นมาอยู่บนสุด
+            const reversedData = [...globalCsvData].reverse();
+
+            reversedData.forEach(row => {
+                if (filterDev === "ทั้งหมด" || row.device === filterDev) {
+                    count++;
+                    let stStr = row.status.toUpperCase();
+                    // กำหนดสีสถานะ (ถ้าเป็นของบอร์ดระบบจะให้เป็นสีเหลือง)
+                    let statusColor = "text-success";
+                    if (stStr.includes("ERROR") || stStr.includes("TRIGGER") || stStr.includes("HIGH") || stStr.includes("LOW")) {
+                        statusColor = "text-danger";
+                    } else if (row.device === "SYSTEM") {
+                        statusColor = "text-warning";
+                    }
+                    
+                    html += `<tr><td>${row.time}</td><td>${row.device}</td><td class="${statusColor} fw-bold">${row.status}</td></tr>`;
+                }
+            });
+
+            if (count === 0) {
+                html = "<tr><td colspan='3' class='py-5 text-warning'>ไม่พบข้อมูลที่ตรงกับเงื่อนไข</td></tr>";
+            }
+            document.getElementById('csv-table-body').innerHTML = html;
+        }
+
+        // จับ Event เมื่อผู้ใช้เปลี่ยนการกรองอุปกรณ์ใน Modal
+        document.getElementById('modalDeviceFilter').addEventListener('change', renderCsvTable);
+
+
+        // ==========================================
+        // ระบบอัปเดตข้อมูล Real-time
+        // ==========================================
         function updateData() {
             let spinner = document.getElementById("loadingSpinner");
             let clock = document.getElementById("liveClock");
             spinner.style.display = "inline-block";
             
             fetch('/api/data?t=' + Date.now()).then(res => res.json()).then(data => {
-                latestHousesData = data.houses; // อัปเดตข้อมูลตู้เพื่อนำ IP ไปใช้งานตอนโหลดไฟล์
-                
                 setTimeout(() => {
                     spinner.style.display = "none";
                     clock.className = "badge bg-success fs-6";
                     clock.innerText = "🟢 ออนไลน์: " + new Date().toLocaleTimeString();
                 }, 200);
+
+                let uniqueNames = new Set(); // ตัวแปรเก็บชื่ออุปกรณ์ทั้งหมดที่ออนไลน์
 
                 for (const [house, hData] of Object.entries(data.houses)) {
                     let elTemp = document.getElementById(house + "_Temp");
@@ -238,6 +355,8 @@ HTML_PAGE = """
                     if(elHum && elHum.innerText !== hData.hum) elHum.innerText = hData.hum;
 
                     hData.sensors.forEach((sensor, idx) => {
+                        uniqueNames.add(sensor.name); // เก็บชื่ออุปกรณ์เข้า Set
+                        
                         let nameEl = document.getElementById(house + "_name_" + idx);
                         let statusEl = document.getElementById(house + "_status_" + idx);
                         
@@ -258,6 +377,17 @@ HTML_PAGE = """
                     });
                 }
                 
+                // อัปเดต Dropdown เลือกอุปกรณ์ของหน้า Real-time
+                let filterDevice = document.getElementById("filterDevice");
+                let currentSelection = filterDevice.value;
+                let optionsHtml = '<option value="ทั้งหมด">ทุกอุปกรณ์</option>';
+                Array.from(uniqueNames).sort().forEach(name => {
+                    let selected = (name === currentSelection) ? "selected" : "";
+                    optionsHtml += `<option value="${name}" ${selected}>${name}</option>`;
+                });
+                if (filterDevice.innerHTML !== optionsHtml) filterDevice.innerHTML = optionsHtml;
+
+                // อัปเดตตารางแจ้งเตือน
                 let tbody = document.getElementById("log-table-body");
                 let filterHouse = document.getElementById("filterHouse").value;
                 let rowsHtml = ""; let count = 0;
@@ -266,15 +396,18 @@ HTML_PAGE = """
                     rowsHtml = "<tr><td colspan='4' class='text-muted py-4'>💡 ระบบปกติ ยังไม่มีการแจ้งเตือน ERROR</td></tr>";
                 } else {
                     data.logs.forEach(log => {
+                        // กรองข้อมูลด้วย โรงเรือน และ อุปกรณ์
                         let matchHouse = (filterHouse === "ทั้งหมด" || log.โรงเรือน === filterHouse);
-                        if (matchHouse) {
+                        let matchDevice = (currentSelection === "ทั้งหมด" || log.อุปกรณ์ === currentSelection);
+                        
+                        if (matchHouse && matchDevice) {
                             count++;
                             let stStr = log.สถานะ.toUpperCase();
                             let statusColor = (stStr.includes("ERROR") || stStr.includes("TRIGGER")) ? "text-danger" : "text-success";
                             rowsHtml += `<tr><td>${log.เวลา}</td><td>${log.โรงเรือน}</td><td>${log.อุปกรณ์}</td><td class="${statusColor} fw-bold">${log.สถานะ}</td></tr>`;
                         }
                     });
-                    if (count === 0) rowsHtml = "<tr><td colspan='4' class='text-muted py-4'>🔍 ไม่พบข้อมูล</td></tr>";
+                    if (count === 0) rowsHtml = "<tr><td colspan='4' class='text-muted py-4'>🔍 ไม่พบข้อมูลที่ตรงกับตัวกรอง</td></tr>";
                 }
                 tbody.innerHTML = rowsHtml;
             }).catch(err => {
@@ -284,27 +417,8 @@ HTML_PAGE = """
             });
         }
         
-        // ฟังก์ชันสำหรับเปิดแท็บใหม่ วิ่งตรงไปหาตู้ ESP32 ตาม IP ที่ได้จาก MQTT
-        function downloadCSV(house) {
-            let houseData = latestHousesData[house];
-            
-            if (!houseData || !houseData.ip || houseData.ip === "") {
-                alert("⚠️ ยังไม่ได้รับ IP ของโรงเรือน " + house + " กรุณารอให้ตู้ส่งข้อมูลเข้าระบบสักครู่ครับ");
-                return;
-            }
-            
-            if (houseData.ip === "0.0.0.0") {
-                alert("⚠️ ตู้คอนโทรล " + house + " ยังไม่ได้เชื่อมต่อ Wi-Fi ครับ");
-                return;
-            }
-
-            let confirmMsg = "กำลังเชื่อมต่อไปที่ตู้ " + house + " (IP: " + houseData.ip + ")\\n\\nคุณเชื่อมต่อ Wi-Fi วงเดียวกันกับที่ฟาร์มนาคำอยู่ใช่ไหม?";
-            if (confirm(confirmMsg)) {
-                window.open("http://" + houseData.ip + "/api/logs", "_blank");
-            }
-        }
-        
         document.getElementById("filterHouse").addEventListener("change", updateData);
+        document.getElementById("filterDevice").addEventListener("change", updateData);
         setInterval(updateData, 1000); 
         updateData();
     </script>
@@ -317,7 +431,9 @@ def index():
     return render_template_string(HTML_PAGE)
 
 if __name__ == "__main__":
+    # เปิด Thread ตัวรับข้อมูล MQTT
     threading.Thread(target=mqtt_background_thread, daemon=True).start()
     
+    # ดึง Port อัตโนมัติที่ Cloud กำหนดมาให้
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
