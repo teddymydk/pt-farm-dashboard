@@ -118,7 +118,6 @@ def mqtt_background_thread():
             print(f"[-] MQTT Network Error: {e}. Retrying in 5s...")
             time.sleep(5)
 
-# 🟢 ไอเดียโค้ดไฮบริด: ลองใช้ "โค้ดพิเศษดึงในวง LAN" ก่อน ถ้าไม่ได้ค่อยสลับโหมด
 @app.route('/api/sd_logs')
 def get_sd_logs():
     house = request.args.get('house')
@@ -130,7 +129,6 @@ def get_sd_logs():
         return jsonify({"status": "error", "message": "ตู้คอนโทรลยังไม่ได้ต่อ Wi-Fi"})
 
     try:
-        # 1. พยายามใช้ "โค้ดพิเศษ" โหลดไฟล์ตรงๆ ภายในเวลา 3 วินาที (ทำงาน 100% ถ้าอยู่วง LAN เดียวกัน)
         req = urllib.request.Request(f"http://{ip}/api/logs", method="GET")
         with urllib.request.urlopen(req, timeout=3) as response:
             csv_data = response.read().decode('utf-8')
@@ -147,8 +145,6 @@ def get_sd_logs():
                 })
         return jsonify({"status": "ok", "logs": parsed_logs})
     except Exception as e:
-        # 2. ถ้ารันบน Render (Cloud) มันจะเข้า Error ตรงนี้ทันที
-        # เราส่งสถานะ fallback กลับไป เพื่อให้หน้าเว็บเปลี่ยนไปแสดง "ปุ่มคัดลอกลิงก์" แทน
         return jsonify({"status": "fallback", "ip": ip})
 
 @app.route('/api/data')
@@ -291,6 +287,18 @@ HTML_PAGE = """
     <script>
         let currentSdLogs = [];
 
+        // ✅ ฟังก์ชันสั่งเบราว์เซอร์ให้ดาวน์โหลดอัตโนมัติ โดยหลบเลี่ยงการบล็อก HTTPS -> HTTP
+        function autoDownload(ip) {
+            let url = "http://" + ip + "/api/logs";
+            let a = document.createElement('a');
+            a.href = url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer'; // หัวใจสำคัญในการตัดความสัมพันธ์กับเว็บหลัก
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+
         function openSDModal() {
             let house = document.getElementById("filterHouse").value;
             if (house === "ทั้งหมด") {
@@ -308,35 +316,48 @@ HTML_PAGE = """
             var sdModal = new bootstrap.Modal(document.getElementById('sdLogModal'));
             sdModal.show();
 
-            // 1. ยิงไปให้ Python ใช้โค้ดพิเศษดึง
             fetch('/api/sd_logs?house=' + house)
             .then(res => res.json())
             .then(data => {
                 document.getElementById("sdModalStatus").classList.remove("blink-text");
                 
                 if (data.status === "ok") {
-                    // 🟢 โค้ดพิเศษทำงานสำเร็จ (แสดงว่ารัน Local อยู่ในวง LAN)
                     currentSdLogs = data.logs;
                     updateFilterAndRender();
                     document.getElementById("sdModalStatus").innerText = `✅ ดึงข้อมูลวง LAN สำเร็จ!`;
                     document.getElementById("sdModalStatus").className = "ms-auto text-success small fw-bold";
                 } 
                 else if (data.status === "fallback") {
-                    
+                    // ✅ ปรับเปลี่ยน UI Fallback ให้เป็นปุ่มโหลดอัตโนมัติ
                     document.getElementById("sdModalStatus").innerText = "พบ ESP32 ในวง LAN";
                     document.getElementById("sdModalStatus").className = "ms-auto text-success small fw-bold";
+                    
+                    document.getElementById("fallbackUi").style.display = "none";
+                    
                     document.getElementById("sd-log-table-body").innerHTML =
                         `
                         <tr>
-                            <td colspan="3" class="py-4">
-                                <a href="http://${data.ip}/api/logs"
-                                   target="_blank"
-                                   class="btn btn-success btn-lg">
-                                   📂 ดาวน์โหลดไฟล์จาก ESP32
-                                </a>
+                            <td colspan="3" class="py-5 text-center">
+                                <button onclick="autoDownload('${data.ip}')" class="btn btn-success btn-lg shadow">
+                                    <span class="fs-4">📥 ดาวน์โหลดไฟล์จาก ESP32 อัตโนมัติ</span>
+                                </button>
+                                <div class="mt-3 text-warning fw-bold">
+                                    * หากระบบถามยืนยันการดาวน์โหลด Insecure content ให้กด Allow (อนุญาต) หรือ Keep (เก็บไว้)
+                                </div>
+                                <div class="mt-4 d-flex justify-content-center align-items-center gap-2">
+                                    นำเข้าไฟล์ที่ดาวน์โหลดมาได้ที่นี่ ➡️ <input type="file" id="csvFileInputFallback" accept=".csv" class="form-control form-control-sm w-auto border-secondary bg-dark text-white">
+                                </div>
                             </td>
                         </tr>
                         `;
+                    
+                    // เพิ่ม Event Listener สำหรับปุ่มนำเข้าไฟล์ใหม่ที่เพิ่งถูกสร้างขึ้นมา
+                    setTimeout(() => {
+                        let fallbackInput = document.getElementById('csvFileInputFallback');
+                        if(fallbackInput) {
+                            fallbackInput.addEventListener('change', handleFileImport);
+                        }
+                    }, 500);
                 } 
                 else {
                     document.getElementById("sdModalStatus").innerText = "❌ ขัดข้อง";
@@ -350,7 +371,6 @@ HTML_PAGE = """
             });
         }
 
-        // ฟังก์ชันเมื่อกดปุ่มคัดลอก
         function copyUrl() {
             var copyText = document.getElementById("manualUrl");
             copyText.select();
@@ -358,8 +378,8 @@ HTML_PAGE = """
             alert("คัดลอกลิงก์สำเร็จ! เปิดแท็บใหม่แล้วกด วางและไป (Paste and Go) ได้เลยครับ");
         }
 
-        // ฟังก์ชันเมื่อกดปุ่มนำเข้าไฟล์ CSV (โหมด Fallback)
-        document.getElementById('csvFileInput').addEventListener('change', function(e) {
+        // ฟังก์ชันส่วนกลางสำหรับจัดการการนำเข้าไฟล์ CSV
+        function handleFileImport(e) {
             const file = e.target.files[0];
             if (!file) return;
 
@@ -388,7 +408,10 @@ HTML_PAGE = """
                 document.getElementById('sdModalStatus').innerText = `✅ นำเข้าไฟล์สำเร็จ`;
             };
             reader.readAsText(file);
-        });
+        }
+
+        // เชื่อม Event Listener กับปุ่มนำเข้าไฟล์ตัวเดิมด้วย
+        document.getElementById('csvFileInput').addEventListener('change', handleFileImport);
 
         function updateFilterAndRender() {
             let uniqueDevices = new Set();
